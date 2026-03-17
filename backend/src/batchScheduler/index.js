@@ -6,6 +6,17 @@ import config from '../config/index.js';
 import { updateBatchTaskRunTime, addBatchTaskLogEntry } from '../routes/batchScheduler.js';
 import { findAnswer } from '../utils/studyQuestions.js';
 import { parseTokenPayload } from '../utils/token.js';
+import { calculateNextRunAt, resolveBatchCronExpression } from '../utils/cronSchedule.js';
+import {
+  executeArenaScheduledTask,
+  executeMailClaimScheduledTask,
+  executeDailyTaskClaimScheduledTask,
+} from '../utils/scheduledTaskHelpers.js';
+import {
+  runAccountTaskExclusive,
+  registerAccountClient,
+  unregisterAccountClient,
+} from '../utils/accountTaskCoordinator.js';
 
 const scheduledBatchJobs = new Map();
 const activeConnections = new Map();
@@ -26,17 +37,84 @@ const DAILY_POINT_TASK_ID_MAP = {
 
 const DAILY_REWARD_DIRTY_TASKS = new Set([
   'SIGN_IN',
-  'HANGUP_ADD_TIME',
   'FRIEND_GOLD',
   'RECRUIT',
-  'HANGUP_CLAIM',
   'BUY_GOLD',
   'BOX_OPEN',
   'ARENA',
-  'BOTTLE_RESET',
   'BOTTLE_CLAIM',
   'BLACK_MARKET'
 ]);
+
+function isRetryableWsError(error) {
+  const message = String(error?.message || error || '');
+  return message.includes('WebSocket未连接') || message.includes('WebSocket连接已断开');
+}
+
+async function reconnectCurrentClient(client, label = '任务') {
+  const accountId = Number(client?.accountId);
+
+  try {
+    client.disconnect();
+  } catch {
+    // ignore
+  }
+
+  await client.connect();
+  if (!client.connected) {
+    throw new Error('WebSocket未连接');
+  }
+
+  if (Number.isFinite(accountId) && accountId > 0) {
+    activeConnections.set(accountId, client);
+    registerAccountClient(accountId, client);
+  }
+
+  try {
+    client.sendDataBundleVer();
+  } catch (error) {
+    console.warn(`⚠️ ${label}重连后初始化请求失败(可忽略):`, error.message);
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  try {
+    await client.getRoleInfo(8000);
+  } catch (error) {
+    if (isRetryableWsError(error) || !client.connected) {
+      throw error;
+    }
+    console.warn(`⚠️ ${label}重连后角色信息预热失败(可忽略):`, error.message);
+  }
+
+  if (!client.connected) {
+    throw new Error('WebSocket未连接');
+  }
+
+  return client;
+}
+
+async function recruitWithReconnect(client, recruitType, mode, maxReconnectRetries = 1) {
+  let attempt = 0;
+
+  while (attempt <= maxReconnectRetries) {
+    try {
+      const result = await client.recruitHero(recruitType);
+      return { ok: true, mode, recruitType, result, retried: attempt };
+    } catch (error) {
+      const message = String(error?.message || `${mode}招募失败`);
+      if (!isRetryableWsError(message) || attempt >= maxReconnectRetries) {
+        return { ok: false, mode, recruitType, error: message, retried: attempt };
+      }
+
+      attempt += 1;
+      console.warn(`🔁 ${mode}招募遇到连接断开，准备重连后重试 (${attempt}/${maxReconnectRetries})`);
+      await reconnectCurrentClient(client, `${mode}招募`);
+    }
+  }
+
+  return { ok: false, mode, recruitType, error: `${mode}招募失败`, retried: maxReconnectRetries };
+}
 
 function buildWsTokenPayload(token) {
   const raw = typeof token === 'string' ? token.trim() : '';
@@ -95,6 +173,11 @@ function resolveWsUrl(wsUrl, token) {
   return `${raw}${sep}p=${encodeURIComponent(payload)}&e=x&lang=chinese`;
 }
 
+function shouldIgnoreFailure(error) {
+  const message = String(error?.message || '');
+  return message.includes('模块未开启');
+}
+
 export async function initBatchScheduler() {
   console.log('🕐 初始化批量任务调度器...');
   
@@ -131,33 +214,37 @@ export function scheduleBatchTask(task) {
     return;
   }
 
-  let cronExpression;
-  if (task.run_type === 'daily' && task.run_time) {
-    const [hours, minutes] = task.run_time.split(':');
-    cronExpression = `${minutes} ${hours} * * *`;
-  } else if (task.run_type === 'cron' && task.cron_expression) {
-    cronExpression = task.cron_expression;
-  } else {
+  const cronExpression = resolveBatchCronExpression(task);
+  if (!cronExpression) {
     console.error(`❌ 批量任务 ${task.name} 没有有效的调度配置`);
     return;
   }
 
   try {
     const job = cron.schedule(cronExpression, async () => {
-      await executeBatchTask(task);
+      try {
+        await executeBatchTask(task);
+      } finally {
+        const nextRunAt = calculateNextRunAt(cronExpression);
+        const scheduled = scheduledBatchJobs.get(taskId);
+        if (scheduled) {
+          scheduled.nextRun = nextRunAt;
+        }
+        updateBatchTaskRunTime(taskId, new Date().toISOString(), nextRunAt);
+      }
     }, {
       timezone: config.cron.timezone
     });
 
-    const nextRun = cron.schedule(cronExpression, () => {}).nextRun();
+    const nextRunAt = calculateNextRunAt(cronExpression);
     
     scheduledBatchJobs.set(taskId, {
       job,
       cronExpression,
-      nextRun: nextRun?.toISOString()
+      nextRun: nextRunAt
     });
 
-    updateBatchTaskRunTime(taskId, null, nextRun?.toISOString());
+    updateBatchTaskRunTime(taskId, null, nextRunAt);
     
     console.log(`📅 已调度批量任务: ${task.name} (${cronExpression})`);
   } catch (error) {
@@ -215,44 +302,61 @@ export async function executeBatchTask(task) {
       return;
     }
 
-    for (const account of accounts) {
-      const rawToken = decrypt(account.token_encrypted, account.token_iv);
-      const tokenMeta = parseTokenPayload(rawToken);
-      const tokenCandidates = tokenMeta.candidates?.length
-        ? tokenMeta.candidates
-        : [tokenMeta.token].filter(Boolean);
-      if (tokenCandidates.length === 0) {
-        addBatchTaskLogEntry(task.id, account.id, 'TOKEN_ERROR', 'error', '账号Token无效，已跳过');
-        continue;
-      }
-      const accountWsUrl = account?.ws_url || tokenMeta.wsUrl || '';
-      let dailyRewardDirty = false;
+    const accountExecutions = accounts.map((account) =>
+      runAccountTaskExclusive(account.id, async () => {
+        const rawToken = decrypt(account.token_encrypted, account.token_iv);
+        const tokenMeta = parseTokenPayload(rawToken);
+        const tokenCandidates = tokenMeta.candidates?.length
+          ? tokenMeta.candidates
+          : [tokenMeta.token].filter(Boolean);
+        if (tokenCandidates.length === 0) {
+          addBatchTaskLogEntry(task.id, account.id, 'TOKEN_ERROR', 'error', '账号Token无效，已跳过');
+          return;
+        }
+        const accountWsUrl = account?.ws_url || tokenMeta.wsUrl || '';
+        let dailyRewardDirty = false;
 
-      for (const taskType of taskTypes) {
-        try {
-          await executeTaskForAccount(task.id, account, taskType, tokenCandidates, tokenMeta.roleId, accountWsUrl);
-          if (taskType === 'DAILY_TASK_CLAIM') {
-            dailyRewardDirty = false;
-          } else if (DAILY_REWARD_DIRTY_TASKS.has(taskType)) {
-            dailyRewardDirty = true;
+        for (const taskType of taskTypes) {
+          try {
+            await executeTaskForAccount(task.id, account, taskType, tokenCandidates, tokenMeta.roleId, accountWsUrl);
+            if (taskType === 'DAILY_TASK_CLAIM') {
+              dailyRewardDirty = false;
+            } else if (DAILY_REWARD_DIRTY_TASKS.has(taskType)) {
+              dailyRewardDirty = true;
+            }
+          } catch (error) {
+            console.error(`❌ 账号 ${account.name} 执行任务 ${taskType} 失败:`, error.message);
+            addBatchTaskLogEntry(task.id, account.id, taskType, shouldIgnoreFailure(error) ? 'ignored' : 'error', error.message);
           }
-        } catch (error) {
-          console.error(`❌ 账号 ${account.name} 执行任务 ${taskType} 失败:`, error.message);
-          addBatchTaskLogEntry(task.id, account.id, taskType, 'error', error.message);
         }
-      }
 
-      if (dailyRewardDirty) {
-        try {
-          await executePostTaskRewardsForAccount(account, tokenCandidates, tokenMeta.roleId, accountWsUrl);
-          addBatchTaskLogEntry(task.id, account.id, 'TASK_REWARD', 'success', '已完成收尾补领（每日任务积分/宝箱/周奖励）');
-        } catch (error) {
-          addBatchTaskLogEntry(task.id, account.id, 'TASK_REWARD', 'error', error.message || '收尾补领失败');
+        if (dailyRewardDirty) {
+          try {
+            const rewardResult = await executePostTaskRewardsForAccount(account, tokenCandidates, tokenMeta.roleId, accountWsUrl);
+            addBatchTaskLogEntry(
+              task.id,
+              account.id,
+              'TASK_REWARD',
+              'success',
+              rewardResult?.message || '收尾补领奖励检查完成'
+            );
+          } catch (error) {
+            addBatchTaskLogEntry(task.id, account.id, 'TASK_REWARD', shouldIgnoreFailure(error) ? 'ignored' : 'error', error.message || '收尾补领失败');
+          }
         }
-      }
+      }).catch((error) => {
+        console.error(`❌ 批量任务账号执行失败: ${account.name}:`, error.message);
+        addBatchTaskLogEntry(task.id, account.id, 'ACCOUNT_ERROR', shouldIgnoreFailure(error) ? 'ignored' : 'error', error.message || '账号执行失败');
+      })
+    );
+
+    await Promise.allSettled(accountExecutions);
+
+    const nextRun = calculateNextRunAt(resolveBatchCronExpression(task));
+    const scheduled = scheduledBatchJobs.get(Number(task.id));
+    if (scheduled) {
+      scheduled.nextRun = nextRun;
     }
-
-    const nextRun = scheduledBatchJobs.get(Number(task.id))?.nextRun;
     updateBatchTaskRunTime(task.id, new Date().toISOString(), nextRun);
     
     addBatchTaskLogEntry(task.id, null, 'BATCH_END', 'success', `批量任务执行完成: ${task.name}`);
@@ -272,7 +376,7 @@ async function executeTaskForAccount(batchTaskId, account, taskType, tokenCandid
   try {
     result = await runTaskByType(client, taskType, {});
   } catch (error) {
-    if (String(error?.message || '').includes('WebSocket未连接')) {
+    if (isRetryableWsError(error)) {
       console.warn(`🔁 批量任务检测到连接已断开，重连后重试: ${account.name} - ${taskType}`);
       activeConnections.delete(account.id);
       client.disconnect();
@@ -298,18 +402,22 @@ async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl 
 
   let connected = false;
   let lastError = null;
-  for (const token of tokenCandidates) {
-    const resolvedWsUrl = resolveWsUrl(wsUrl, token);
-    const candidateClient = new GameClient(token, { roleId, wsUrl: resolvedWsUrl });
+      for (const token of tokenCandidates) {
+        const resolvedWsUrl = resolveWsUrl(wsUrl, token);
+        const candidateClient = new GameClient(token, { roleId, wsUrl: resolvedWsUrl });
+        candidateClient.accountId = account.id;
+        candidateClient.accountName = account.name;
 
-    candidateClient.onDisconnect = (code, reason) => {
-      console.log(`🔌 连接断开: ${account.name} (${code}) ${reason}`);
+        candidateClient.onDisconnect = (code, reason) => {
+          console.log(`🔌 连接断开: ${account.name} (${code}) ${reason}`);
       activeConnections.delete(account.id);
+      unregisterAccountClient(account.id, candidateClient);
     };
 
     candidateClient.onError = (error) => {
       console.error(`❌ 连接错误: ${account.name}:`, error.message);
       activeConnections.delete(account.id);
+      unregisterAccountClient(account.id, candidateClient);
     };
 
     try {
@@ -318,6 +426,7 @@ async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl 
         throw new Error('WebSocket未连接');
       }
       activeConnections.set(account.id, candidateClient);
+      registerAccountClient(account.id, candidateClient);
       try {
         candidateClient.sendDataBundleVer();
       } catch (error) {
@@ -341,6 +450,7 @@ async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl 
       lastError = error;
       candidateClient.disconnect();
       activeConnections.delete(account.id);
+      unregisterAccountClient(account.id, candidateClient);
     }
   }
 
@@ -379,7 +489,7 @@ async function executePostTaskRewardsForAccount(account, tokenCandidates, roleId
   try {
     return await executeDailyTaskClaim(client, {});
   } catch (error) {
-    if (!String(error?.message || '').includes('WebSocket未连接')) {
+    if (!isRetryableWsError(error)) {
       throw error;
     }
     console.warn(`🔁 批量任务收尾补领检测到连接已断开，重连后重试: ${account.name}`);
@@ -457,6 +567,9 @@ async function runTaskByType(client, taskType, config) {
     
     case 'LEGACY_CLAIM':
       return await executeLegacyClaim(client, config);
+
+    case 'DAILY_TASK_CLAIM':
+      return await executeDailyTaskClaim(client, config);
     
     case 'DREAM':
       return await executeDream(client, config);
@@ -503,91 +616,7 @@ async function executeLegionSignIn(client) {
 }
 
 async function executeArena(client, config) {
-  const { battleCount = 3 } = config;
-  const results = [];
-
-  await client.ensureBattleVersion();
-
-  const pickArenaTargetId = (payload) => {
-    if (!payload) return null;
-    if (Array.isArray(payload) && payload.length > 0) {
-      const c = payload[0];
-      return c?.roleId || c?.roleid || c?.targetId || c?.id || null;
-    }
-    const candidate =
-      payload?.rankList?.[0] ||
-      payload?.roleList?.[0] ||
-      payload?.targets?.[0] ||
-      payload?.targetList?.[0] ||
-      payload?.list?.[0] ||
-      null;
-    return candidate?.roleId || candidate?.roleid || candidate?.targetId || candidate?.id || payload?.roleId || payload?.id || null;
-  };
-
-  const resolveArenaTargets = (payload) => {
-    if (!payload) return [];
-    if (Array.isArray(payload)) return payload;
-    return payload?.rankList || payload?.roleList || payload?.targets || payload?.targetList || payload?.list || [];
-  };
-
-  const fetchTargets = async () => {
-    let targetsResp = null;
-    try {
-      targetsResp = await client.getArenaTargets(false);
-    } catch {
-      // 忽略该步骤失败
-    }
-    let targets = resolveArenaTargets(targetsResp);
-    if (!Array.isArray(targets) || targets.length === 0) {
-      try {
-        targetsResp = await client.getArenaTargets(true);
-      } catch {
-        // 忽略刷新失败
-      }
-      targets = resolveArenaTargets(targetsResp);
-    }
-    return targets;
-  };
-
-  for (let i = 0; i < battleCount; i++) {
-    try {
-      await client.startArenaArea();
-    } catch {
-      // 忽略该步骤失败，继续尝试拉取目标
-    }
-
-    const targets = await fetchTargets();
-    if (!Array.isArray(targets) || targets.length === 0) {
-      results.push({ target: 'unknown', ok: false, error: '未找到竞技场数据' });
-      break;
-    }
-
-    const target = targets[0];
-    const targetId = target?.roleId || target?.roleid || target?.targetId || target?.id;
-    if (!targetId) {
-      results.push({ target: 'unknown', ok: false, error: '未找到可用的竞技场目标' });
-      break;
-    }
-
-    try {
-      const result = await client.startArenaFight(targetId);
-      results.push({ target: target.name || targetId, ok: true, result });
-    } catch (error) {
-      results.push({ target: target.name || targetId, ok: false, error: error.message });
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 600));
-  }
-
-  const successCount = results.filter((x) => x.ok).length;
-  if (results.length === 0) {
-    throw new Error('未找到可用的竞技场目标');
-  }
-  if (successCount === 0) {
-    const firstError = results.find((x) => x?.error)?.error || '竞技场战斗失败';
-    throw new Error(firstError);
-  }
-  return { message: `竞技场战斗完成 (${successCount}/${results.length}场)`, data: { results, successCount } };
+  return executeArenaScheduledTask(client, config);
 }
 
 async function executeTower(client, config) {
@@ -769,6 +798,7 @@ async function executeLegionBoss(client, config) {
 
 async function executeRecruit(client, config) {
   const results = [];
+  const maxReconnectRetries = Math.max(0, Number(config?.reconnectRetries ?? 1) || 0);
 
   const hasNewSwitches = config?.useFreeRecruit !== undefined || config?.usePaidRecruit !== undefined;
   if (hasNewSwitches) {
@@ -783,11 +813,9 @@ async function executeRecruit(client, config) {
 
     if (useFreeRecruit) {
       for (let i = 0; i < freeRecruitCount; i++) {
-        try {
-          const result = await client.recruitHero(3);
-          results.push({ ok: true, mode: 'free', recruitType: 3, result });
-        } catch (error) {
-          results.push({ ok: false, mode: 'free', recruitType: 3, error: String(error?.message || '免费招募失败') });
+        const result = await recruitWithReconnect(client, 3, 'free', maxReconnectRetries);
+        results.push(result);
+        if (!result.ok) {
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, 300));
@@ -796,11 +824,9 @@ async function executeRecruit(client, config) {
 
     if (usePaidRecruit) {
       for (let i = 0; i < paidRecruitCount; i++) {
-        try {
-          const result = await client.recruitHero(1);
-          results.push({ ok: true, mode: 'paid', recruitType: 1, result });
-        } catch (error) {
-          results.push({ ok: false, mode: 'paid', recruitType: 1, error: String(error?.message || '付费招募失败') });
+        const result = await recruitWithReconnect(client, 1, 'paid', maxReconnectRetries);
+        results.push(result);
+        if (!result.ok) {
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, 300));
@@ -811,11 +837,10 @@ async function executeRecruit(client, config) {
     const recruitType = Number(config?.recruitType ?? 1) || 1;
     const count = Math.max(1, Number(config?.count ?? 2) || 2);
     for (let i = 0; i < count; i++) {
-      try {
-        const result = await client.recruitHero(recruitType);
-        results.push({ ok: true, mode: 'legacy', recruitType, result });
-      } catch (error) {
-        results.push({ ok: false, mode: 'legacy', recruitType, error: String(error?.message || '招募失败') });
+      const result = await recruitWithReconnect(client, recruitType, 'legacy', maxReconnectRetries);
+      results.push(result);
+      if (!result.ok) {
+        break;
       }
       await new Promise((resolve) => setTimeout(resolve, 300));
     }
@@ -897,15 +922,11 @@ async function executeFishing(client, config) {
 }
 
 async function executeMailClaim(client) {
-  try {
-    const result = await client.claimAllMail();
-    return { message: '邮件领取成功', data: result };
-  } catch (error) {
-    if (error.message.includes('没有可领取')) {
-      return { message: '没有可领取的邮件', data: {} };
-    }
-    throw error;
-  }
+  return executeMailClaimScheduledTask(client);
+}
+
+async function executeDailyTaskClaim(client, config) {
+  return executeDailyTaskClaimScheduledTask(client, config);
 }
 
 async function executeHangupClaim(client, config) {
@@ -1077,32 +1098,54 @@ async function executeCarClaim(client, config) {
 }
 
 async function executeBlackMarket(client, config) {
-  const parseGoodsList = (value) => {
-    if (Array.isArray(value)) {
-      return value.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0);
-    }
-    if (typeof value === 'string') {
-      return value.split(',').map((v) => Number(v.trim())).filter((v) => Number.isFinite(v) && v > 0);
-    }
-    return [];
-  };
-  const goodsList = parseGoodsList(config?.purchaseList || config?.goodsIds || config?.purchaseGoodsIds);
-  const finalGoodsList = goodsList.length > 0 ? goodsList : [1];
   const results = [];
-  for (const goodsId of finalGoodsList) {
-    try {
-      const result = await client.blackMarketPurchase(goodsId);
-      results.push({ goodsId, ok: true, result });
-    } catch (error) {
-      results.push({ goodsId, ok: false, error: error.message });
+
+  try {
+    const result = await client.blackMarketPurchase();
+    results.push({ ok: true, command: 'store_purchase', mode: 'purchase_list', result });
+    return { message: '使用游戏采购清单成功', data: { results, successCount: 1, mode: 'purchase_list' } };
+  } catch (error) {
+    const message = String(error?.message || '黑市采购失败');
+    results.push({ ok: false, command: 'store_purchase', mode: 'purchase_list', error: message });
+
+    if (!message.includes('商店采购未开启')) {
+      throw new Error(message);
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  const successCount = results.filter((x) => x.ok).length;
-  if (successCount === 0 && results.length > 0) {
-    throw new Error(results[0].error || '黑市采购失败');
+
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  try {
+    const result = await client.directStoreBuy(1);
+    results.push({
+      ok: true,
+      command: 'store_buy',
+      mode: 'fallback',
+      goodsId: 1,
+      itemName: '青铜宝箱',
+      quantity: 1,
+      displayName: '购买青铜宝箱*1',
+      result,
+    });
+
+    return {
+      message: '黑市采购未开启，已兜底购买青铜宝箱*1',
+      data: { results, successCount: 1, fallbackUsed: true, goodsId: 1 },
+    };
+  } catch (error) {
+    const message = String(error?.message || '黑市采购失败');
+    results.push({
+      ok: false,
+      command: 'store_buy',
+      mode: 'fallback',
+      goodsId: 1,
+      itemName: '青铜宝箱',
+      quantity: 1,
+      displayName: '购买青铜宝箱*1',
+      error: message,
+    });
+    throw new Error(message);
   }
-  return { message: `黑市采购完成 (${successCount}/${results.length})`, data: { results, successCount, goodsList: finalGoodsList } };
 }
 
 async function executeTreasureClaim(client, config) {
@@ -1202,6 +1245,7 @@ export function stopBatchScheduler() {
   
   for (const [accountId, client] of activeConnections) {
     client.disconnect();
+    unregisterAccountClient(accountId, client);
   }
   activeConnections.clear();
   
@@ -1212,11 +1256,16 @@ export function getScheduledBatchJobs() {
   return scheduledBatchJobs;
 }
 
+export function getActiveBatchConnections() {
+  return activeConnections;
+}
+
 export default {
   initBatchScheduler,
   scheduleBatchTask,
   unscheduleBatchTask,
   executeBatchTask,
   stopBatchScheduler,
-  getScheduledBatchJobs
+  getScheduledBatchJobs,
+  getActiveBatchConnections
 };

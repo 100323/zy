@@ -465,17 +465,45 @@ const refreshToken = async (token) => {
       token.importMethod === "wxQrcode" ||
       token.importMethod === "bin"
     ) {
-      let userToken = await getArrayBuffer(token.id);
-      let usedOldKey = false;
-      if (!userToken) {
-        userToken = await getArrayBuffer(token.name);
-        usedOldKey = true;
+      const candidateKeys = Array.from(
+        new Set(
+          [
+            token.id,
+            token.storageKey,
+            ...(Array.isArray(token.legacyStorageKeys) ? token.legacyStorageKeys : []),
+            token.name,
+          ]
+            .map((key) => String(key || "").trim())
+            .filter(Boolean),
+        ),
+      );
+
+      let userToken = null;
+      let matchedKey = null;
+      for (const key of candidateKeys) {
+        userToken = await getArrayBuffer(key);
+        if (userToken) {
+          matchedKey = key;
+          break;
+        }
       }
       if (userToken) {
         const newToken = await transformToken(userToken);
         tokenStore.updateToken(token.id, {
           token: newToken,
           lastRefreshed: Date.now(),
+          storageKey: token.id,
+          legacyStorageKeys: Array.from(
+            new Set(
+              [
+                ...(Array.isArray(token.legacyStorageKeys) ? token.legacyStorageKeys : []),
+                token.storageKey,
+                matchedKey,
+              ]
+                .map((key) => String(key || "").trim())
+                .filter(Boolean),
+            ),
+          ),
         });
         const accountId = String(token.id || "");
         if (/^\d+$/.test(accountId)) {
@@ -489,11 +517,13 @@ const refreshToken = async (token) => {
             // 忽略同步失败
           }
         }
-        if (usedOldKey) {
+        if (matchedKey && matchedKey !== token.id) {
           await storeArrayBuffer(token.id, userToken);
-          await deleteArrayBuffer(token.name);
+          await deleteArrayBuffer(matchedKey);
         }
         message.success("Token刷新成功");
+      } else {
+        throw new Error(`未找到可用于刷新的BIN数据，已尝试: ${candidateKeys.join(", ")}`);
       }
     } else {
       message.info("该Token需要手动刷新");

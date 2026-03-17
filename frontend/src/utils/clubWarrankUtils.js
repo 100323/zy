@@ -1,8 +1,9 @@
 /**
  * 盐场匹配数据函数
  */
+const loadXLSX = () => import('xlsx');
 
-import * as XLSX from "xlsx";
+
 
 /**
  * 获取今天日期
@@ -22,7 +23,7 @@ export function gettoday() {
  * @param {string} queryDate - 查询日期
  * @returns {string} 格式化的文本
  */
-export function formatWarrankRecordsForExport(legionRankList, queryDate) {
+export async function formatWarrankRecordsForExport(legionRankList, queryDate) {
   if (!legionRankList || legionRankList.length === 0) {
     return "暂无战绩数据";
   }
@@ -82,6 +83,8 @@ export function formatWarrankRecordsForExport(legionRankList, queryDate) {
         totalweizhi++;
     }
   });
+
+  const XLSX = await loadXLSX();
 
   // 创建工作簿
   const workbook = XLSX.utils.book_new();

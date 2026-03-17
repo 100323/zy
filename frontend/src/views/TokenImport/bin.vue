@@ -297,6 +297,8 @@ const addSelectedRole = async (roleInfo: any) => {
 
     roleList.value.push({
       id: tokenId,
+      storageKey: tokenId,
+      legacyStorageKeys: [tokenId],
       roleId: roleInfo.roleId,
       token: roleToken,
       name: finalName,

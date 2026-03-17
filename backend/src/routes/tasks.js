@@ -326,8 +326,15 @@ export function getEnabledTasks() {
 
 export function updateTaskRunTime(taskId, nextRunAt) {
   run(
-    'UPDATE task_configs SET last_run_at = CURRENT_TIMESTAMP, next_run_at = ? WHERE id = ?',
+    'UPDATE task_configs SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
     [nextRunAt, taskId]
+  );
+}
+
+export function markTaskRunTime(taskId, lastRunAt, nextRunAt) {
+  run(
+    'UPDATE task_configs SET last_run_at = ?, next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    [lastRunAt, nextRunAt, taskId]
   );
 }
 

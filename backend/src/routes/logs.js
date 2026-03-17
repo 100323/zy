@@ -1,10 +1,117 @@
 import { Router } from 'express';
 import { run, get, all } from '../database/index.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { TASK_TYPES } from './tasks.js';
+import { calculateNextRunAt, getNextRunAt } from '../utils/cronSchedule.js';
 
 const router = Router();
 
 router.use(authMiddleware);
+
+router.get('/account/:accountId/grouped', (req, res) => {
+  try {
+    const { accountId } = req.params;
+
+    const account = get(
+      `SELECT id, name, server, remark, status, created_at, updated_at, last_used_at
+       FROM game_accounts
+       WHERE id = ? AND user_id = ?`,
+      [accountId, req.user.userId]
+    );
+
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        error: '账号不存在'
+      });
+    }
+
+    const taskConfigs = all(
+      `SELECT id, account_id, task_type, enabled, cron_expression, last_run_at, next_run_at, created_at, updated_at
+       FROM task_configs
+       WHERE account_id = ?
+       ORDER BY
+         CASE WHEN next_run_at IS NULL THEN 1 ELSE 0 END,
+         datetime(next_run_at) ASC,
+         datetime(updated_at) DESC,
+         id DESC`,
+      [accountId]
+    );
+
+    const taskLogs = all(
+      `SELECT id, account_id, task_type, status, message, details, created_at
+       FROM task_logs
+       WHERE account_id = ?
+       ORDER BY datetime(created_at) DESC, id DESC`,
+      [accountId]
+    );
+
+    const logsByTaskType = new Map();
+    taskLogs.forEach((log) => {
+      const taskType = log.task_type;
+      if (!taskType) return;
+
+      if (!logsByTaskType.has(taskType)) {
+        logsByTaskType.set(taskType, []);
+      }
+
+      const currentLogs = logsByTaskType.get(taskType);
+      if (currentLogs.length < 10) {
+        currentLogs.push(log);
+      }
+    });
+
+    const taskConfigByType = new Map();
+    taskConfigs.forEach((task) => {
+      if (!task?.task_type || taskConfigByType.has(task.task_type)) return;
+      taskConfigByType.set(task.task_type, task);
+    });
+
+    const taskTypes = new Set([
+      ...taskConfigs.map((task) => task.task_type).filter(Boolean),
+      ...taskLogs.map((log) => log.task_type).filter(Boolean)
+    ]);
+
+    const tasks = Array.from(taskTypes).map((taskType) => {
+      const task = taskConfigByType.get(taskType);
+      const fallbackCron = TASK_TYPES[taskType]?.cron || null;
+      const cronExpression = task?.cron_expression || fallbackCron;
+
+      return {
+        id: task?.id || null,
+        accountId: task?.account_id || Number(accountId),
+        taskType,
+        taskName: TASK_TYPES[taskType]?.name || taskType,
+        enabled: task ? !!task.enabled : false,
+        cronExpression,
+        lastRunAt: task?.last_run_at || null,
+        nextRunAt: getNextRunAt(cronExpression, task?.next_run_at || null),
+        createdAt: task?.created_at || null,
+        updatedAt: task?.updated_at || null,
+        logs: logsByTaskType.get(taskType) || []
+      };
+    }).sort((a, b) => {
+      const aTime = a.nextRunAt ? new Date(a.nextRunAt).getTime() : Number.MAX_SAFE_INTEGER;
+      const bTime = b.nextRunAt ? new Date(b.nextRunAt).getTime() : Number.MAX_SAFE_INTEGER;
+      if (aTime !== bTime) return aTime - bTime;
+      return a.taskName.localeCompare(b.taskName, 'zh-CN');
+    });
+
+    res.json({
+      success: true,
+      data: {
+        account,
+        tasks
+      }
+    });
+  } catch (error) {
+    console.error('获取分组日志错误:', error);
+    res.status(500).json({
+      success: false,
+      error: '获取分组日志失败'
+    });
+  }
+});
 
 router.get('/', (req, res) => {
   try {

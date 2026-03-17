@@ -24,13 +24,13 @@ const routes = [
         path: 'tokens',
         name: 'Tokens',
         component: () => import('@views/TokenImport/index.vue'),
-        meta: { title: '账号管理' }
+        meta: { title: '账号管理', requiresNaive: true, requiresArco: true }
       },
       {
         path: 'game-features',
         name: 'GameFeatures',
         component: () => import('@views/GameFeatures.vue'),
-        meta: { title: '游戏功能' }
+        meta: { title: '游戏功能', requiresNaive: true, requiresArco: true }
       },
       {
         path: 'daily-tasks',
@@ -42,7 +42,7 @@ const routes = [
         path: 'tasks',
         name: 'Tasks',
         component: () => import('@views/Tasks.vue'),
-        meta: { title: '任务配置' }
+        meta: { title: '任务配置', requiresNaive: true }
       },
       {
         path: 'logs',

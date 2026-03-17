@@ -784,7 +784,7 @@ const handleExport = async () => {
 
   try {
     if (exportmethod.value.includes('1')) {
-      const exportText = formatBattleRecordsForExport(battleRecords.value.roleDetailsList, queryDate.value)
+      const exportText = await formatBattleRecordsForExport(battleRecords.value.roleDetailsList, queryDate.value)
     }
     if (exportmethod.value.includes('2')) {
       exportToImage()

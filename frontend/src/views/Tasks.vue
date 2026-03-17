@@ -540,10 +540,6 @@ const mapBackendConfigToFrontend = (taskKey, backendConfig = {}) => {
   if (taskKey === 'batchFriendGold') {
     mapped.friendGoldCount = backendConfig.count ?? backendConfig.friendGoldCount ?? 3;
   }
-  if (taskKey === 'store_purchase') {
-    const list = backendConfig.purchaseList || backendConfig.goodsIds || backendConfig.purchaseGoodsIds;
-    mapped.purchaseGoodsIds = Array.isArray(list) ? list.join(',') : (list || '1');
-  }
   if (taskKey === 'batchBuyGold' && backendConfig.buyNum !== undefined) {
     mapped.buyGoldTimes = backendConfig.buyNum;
   }
@@ -617,14 +613,7 @@ const mapFrontendConfigToBackend = (taskKey, taskConfig = {}) => {
     };
   }
   if (taskKey === 'store_purchase') {
-    const rawList = sourceConfig.purchaseGoodsIds ?? '1';
-    const purchaseList = String(rawList)
-      .split(',')
-      .map((v) => Number(v.trim()))
-      .filter((v) => Number.isFinite(v) && v > 0);
-    return {
-      purchaseList: purchaseList.length > 0 ? purchaseList : [1],
-    };
+    return {};
   }
   if (taskKey === 'batchBuyGold') {
     return {

@@ -1,13 +1,14 @@
 /**
  * 俱乐部战斗工具函数
  */
+const loadXLSX = () => import('xlsx');
+
 
 /**
  * 获取最近的周六日期
  * 如果今天是周六，返回今天的日期；否则返回上周六的日期
  * @returns {string} 格式化的日期字符串 YYYY/MM/DD
  */
-import * as XLSX from "xlsx";
 
 export function getLastSaturday() {
   const today = new Date();
@@ -324,7 +325,7 @@ export function parseAttackType(attackType) {
  * @param {string} queryDate - 查询日期
  * @returns {string} 格式化的文本
  */
-export function formatBattleRecordsForExport(roleDetailsList, queryDate) {
+export async function formatBattleRecordsForExport(roleDetailsList, queryDate) {
   if (!roleDetailsList || roleDetailsList.length === 0) {
     return "暂无战绩数据";
   }
@@ -442,6 +443,8 @@ export function formatBattleRecordsForExport(roleDetailsList, queryDate) {
       formatTimestamp(battle.timestamp || 0),
     ]),
   ];
+  const XLSX = await loadXLSX();
+
   // 创建工作簿
   const workbook = XLSX.utils.book_new();
   const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);

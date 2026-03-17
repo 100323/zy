@@ -14,7 +14,7 @@
         <el-card class="stat-card">
           <div class="stat-info">
             <div class="stat-value">{{ stats.enabledTaskCount }}</div>
-            <div class="stat-label">启用任务</div>
+            <div class="stat-label">启用调度总数（单账号+批量）</div>
           </div>
         </el-card>
       </el-col>
@@ -23,7 +23,7 @@
         <el-card class="stat-card">
           <div class="stat-info">
             <div class="stat-value">{{ stats.todayLogCount }}</div>
-            <div class="stat-label">今日执行</div>
+            <div class="stat-label">今日执行记录（单账号+批量）</div>
           </div>
         </el-card>
       </el-col>
@@ -32,7 +32,7 @@
         <el-card class="stat-card pending">
           <div class="stat-info">
             <div class="stat-value">{{ stats.pendingTaskCount }}</div>
-            <div class="stat-label">待执行任务</div>
+            <div class="stat-label">待执行调度（单账号+批量）</div>
           </div>
         </el-card>
       </el-col>
@@ -41,7 +41,7 @@
         <el-card class="stat-card error">
           <div class="stat-info">
             <div class="stat-value">{{ stats.failedTaskCount }}</div>
-            <div class="stat-label">失败任务</div>
+            <div class="stat-label">今日失败记录（单账号+批量）</div>
           </div>
         </el-card>
       </el-col>
@@ -50,7 +50,7 @@
         <el-card class="stat-card success">
           <div class="stat-info">
             <div class="stat-value">{{ stats.successTaskCount }}</div>
-            <div class="stat-label">成功任务</div>
+            <div class="stat-label">今日成功记录（单账号+批量）</div>
           </div>
         </el-card>
       </el-col>
@@ -81,11 +81,11 @@
               </el-tag>
             </div>
             <div class="status-item">
-              <span class="status-label">定时任务:</span>
+              <span class="status-label">已调度任务(单账号+批量):</span>
               <el-tag class="status-tag" type="primary">{{ systemStatus.scheduler.totalJobs }} 个</el-tag>
             </div>
             <div class="status-item">
-              <span class="status-label">活跃连接:</span>
+              <span class="status-label">活跃连接(单账号+批量):</span>
               <el-tag class="status-tag" type="success">{{ systemStatus.scheduler.activeConnections }} 个</el-tag>
             </div>
             <div class="status-item">
@@ -127,8 +127,8 @@
               class="activity-item"
             >
               <div class="activity-icon">
-                <el-icon :size="20" :color="activity.status === 'success' ? '#67C23A' : '#F56C6C'">
-                  <component :is="activity.status === 'success' ? 'CircleCheckFilled' : 'CircleCloseFilled'" />
+                <el-icon :size="20" :color="getActivityColor(activity.status)">
+                  <component :is="getActivityIcon(activity.status)" />
                 </el-icon>
               </div>
               <div class="activity-content">
@@ -172,7 +172,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue';
-import { RefreshRight, CircleCheckFilled, CircleCloseFilled } from '@element-plus/icons-vue';
+import { RefreshRight, CircleCheckFilled, CircleCloseFilled, InfoFilled } from '@element-plus/icons-vue';
 import api from '../api';
 
 const stats = ref({
@@ -201,6 +201,18 @@ const systemStatus = ref({
 const recentActivities = ref([]);
 const statusLoading = ref(false);
 let refreshTimer = null;
+
+const getActivityColor = (status) => {
+  if (status === 'success') return '#67C23A';
+  if (status === 'ignored') return '#909399';
+  return '#F56C6C';
+};
+
+const getActivityIcon = (status) => {
+  if (status === 'success') return CircleCheckFilled;
+  if (status === 'ignored') return InfoFilled;
+  return CircleCloseFilled;
+};
 
 const taskTypeNames = {
   SIGN_IN: '每日签到',

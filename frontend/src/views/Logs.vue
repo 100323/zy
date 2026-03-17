@@ -3,118 +3,230 @@
     <el-card>
       <template #header>
         <div class="card-header">
-          <span>执行日志</span>
-          <el-button @click="fetchLogs">
+          <div>
+            <span>执行日志</span>
+            <div class="header-tip">按游戏账号查看定时任务日志，每个任务显示最新 10 条记录</div>
+          </div>
+          <el-button @click="refreshCurrentView" :loading="loading">
             <el-icon><Refresh /></el-icon>
             刷新
           </el-button>
         </div>
       </template>
-      
-      <el-table :data="logs" stripe v-loading="loading">
-        <el-table-column prop="account_name" label="账号" width="120" />
-        <el-table-column prop="task_type" label="任务类型" width="120">
-          <template #default="{ row }">
-            <el-tag size="small">{{ getTaskTypeName(row.task_type) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="status" label="状态" width="80">
-          <template #default="{ row }">
-            <el-tag :type="row.status === 'success' ? 'success' : 'danger'" size="small">
-              {{ row.status === 'success' ? '成功' : '失败' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="message" label="消息" show-overflow-tooltip />
-        <el-table-column prop="created_at" label="时间" width="180">
-          <template #default="{ row }">
-            {{ formatTime(row.created_at) }}
-          </template>
-        </el-table-column>
-      </el-table>
-      
-      <el-empty v-if="logs.length === 0 && !loading" description="暂无执行日志" />
+
+      <div class="filter-bar">
+        <span class="filter-label">游戏账号</span>
+        <el-select
+          v-model="selectedAccountId"
+          class="account-select"
+          placeholder="请选择游戏账号"
+          filterable
+          clearable
+          :loading="accountsLoading"
+          @change="handleAccountChange"
+        >
+          <el-option
+            v-for="account in accounts"
+            :key="account.id"
+            :label="account.name"
+            :value="account.id"
+          />
+        </el-select>
+      </div>
+
+      <el-skeleton v-if="loading" :rows="5" animated />
+
+      <template v-else>
+        <el-empty
+          v-if="accounts.length === 0"
+          description="暂无游戏账号"
+        />
+
+        <el-empty
+          v-else-if="!selectedAccountId"
+          description="请选择要查看日志的游戏账号"
+        />
+
+        <el-empty
+          v-else-if="taskGroups.length === 0"
+          description="当前账号暂无定时任务或执行记录"
+        />
+
+        <div v-else class="task-log-list">
+          <div class="account-summary">
+            <span class="account-name">{{ currentAccountName }}</span>
+            <span class="task-count">共 {{ taskGroups.length }} 个定时任务</span>
+          </div>
+
+          <div class="task-sections">
+            <div
+              v-for="task in taskGroups"
+              :key="task.taskType"
+              class="task-section"
+            >
+              <div class="task-header">
+                <div class="task-title-wrap">
+                  <span class="task-title">{{ task.taskName }}</span>
+                  <el-tag size="small" type="info" effect="plain">
+                    下次执行：{{ formatTime(task.nextRunAt) }}
+                  </el-tag>
+                </div>
+                <div class="task-meta">
+                  <span>最新 {{ task.logs.length }} 条</span>
+                  <el-button
+                    link
+                    type="primary"
+                    @click="toggleTaskExpanded(task.taskType)"
+                  >
+                    {{ isTaskExpanded(task.taskType) ? '收起' : '展开' }}
+                  </el-button>
+                </div>
+              </div>
+
+              <div v-if="isTaskExpanded(task.taskType)" class="task-body">
+                <div v-if="task.logs.length === 0" class="empty-task-log">
+                  暂无执行记录
+                </div>
+
+                <div v-else class="log-items">
+                  <div
+                    v-for="log in task.logs"
+                    :key="log.id"
+                    class="log-item"
+                  >
+                    <div class="log-item-header">
+                      <div class="log-left">
+                        <el-tag
+                          size="small"
+                          :type="getLogStatusType(log.status)"
+                        >
+                          {{ getLogStatusText(log.status) }}
+                        </el-tag>
+                        <span class="log-time">{{ formatTime(log.created_at) }}</span>
+                      </div>
+                    </div>
+                    <div class="log-message">{{ log.message || '-' }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
     </el-card>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Refresh } from '@element-plus/icons-vue';
 import api from '@utils/api';
 
-const logs = ref([]);
+const accounts = ref([]);
+const accountsLoading = ref(false);
 const loading = ref(false);
+const selectedAccountId = ref(null);
+const taskGroups = ref([]);
+const expandedTaskTypes = ref([]);
 
-const taskTypeNames = {
-  SIGN_IN: '每日签到',
-  LEGION_SIGN: '军团签到',
-  ARENA: '竞技场战斗',
-  TOWER: '爬塔',
-  BOSS_TOWER: '咸王宝库',
-  WEIRD_TOWER: '怪异塔',
-  WEIRD_TOWER_FREE_ITEM: '怪异塔免费道具',
-  WEIRD_TOWER_USE_ITEM: '使用怪异塔道具',
-  WEIRD_TOWER_MERGE_ITEM: '怪异塔合成',
-  LEGION_BOSS: '军团BOSS',
-  DAILY_BOSS: '每日咸王',
-  RECRUIT: '武将招募',
-  FRIEND_GOLD: '送好友金币',
-  BUY_GOLD: '点金',
-  FISHING: '钓鱼',
-  MAIL_CLAIM: '领取邮件',
-  HANGUP_CLAIM: '领取挂机奖励',
-  STUDY: '答题',
-  HANGUP_ADD_TIME: '一键加钟',
-  BOTTLE_RESET: '重置罐子',
-  BOTTLE_CLAIM: '领取罐子',
-  CAR_SEND: '智能发车',
-  CAR_CLAIM: '一键收车',
-  BLACK_MARKET: '黑市采购',
-  TREASURE_CLAIM: '珍宝阁领取',
-  LEGACY_CLAIM: '残卷收取',
-  WELFARE_CLAIM: '福利奖励领取',
-  DAILY_TASK_CLAIM: '每日任务奖励领取',
-  DREAM: '梦境',
-  DREAM_PURCHASE: '购买梦境商品',
-  SKIN_CHALLENGE: '换皮闯关',
-  PEACH_TASK: '蟠桃园任务',
-  BOX_OPEN: '批量开箱',
-  LEGION_STORE_FRAGMENT: '购买四圣碎片',
-  GENIE_SWEEP: '灯神扫荡'
+const currentAccountName = computed(() => {
+  const currentAccount = accounts.value.find((account) => account.id === selectedAccountId.value);
+  return currentAccount?.name || '未选择账号';
+});
+
+const getLogStatusType = (status) => {
+  if (status === 'success') return 'success';
+  if (status === 'ignored') return 'info';
+  return 'danger';
 };
 
-const getTaskTypeName = (taskType) => {
-  return taskTypeNames[taskType] || taskType;
+const getLogStatusText = (status) => {
+  if (status === 'success') return '成功';
+  if (status === 'ignored') return '已忽略';
+  return '失败';
 };
 
 const formatTime = (time) => {
   if (!time) return '-';
-  const normalized = String(time).includes('T')
-    ? String(time)
-    : String(time).replace(' ', 'T');
-  // 后端SQLite CURRENT_TIMESTAMP为UTC，这里按UTC解释再转本地时区显示
-  return new Date(`${normalized}Z`).toLocaleString('zh-CN');
+
+  const raw = String(time).trim();
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(normalized);
+  const parsed = new Date(hasTimezone ? normalized : `${normalized}Z`);
+
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleString('zh-CN');
 };
 
-const fetchLogs = async () => {
+const fetchAccounts = async () => {
+  accountsLoading.value = true;
+  try {
+    const res = await api.get('/accounts');
+    if (res.success) {
+      accounts.value = res.data || [];
+      if (!selectedAccountId.value && accounts.value.length > 0) {
+        selectedAccountId.value = accounts.value[0].id;
+      } else if (
+        selectedAccountId.value &&
+        !accounts.value.some((account) => account.id === selectedAccountId.value)
+      ) {
+        selectedAccountId.value = accounts.value[0]?.id || null;
+      }
+    }
+  } catch (error) {
+    console.error('获取账号失败:', error);
+    ElMessage.error('获取账号失败');
+  } finally {
+    accountsLoading.value = false;
+  }
+};
+
+const fetchGroupedLogs = async () => {
+  if (!selectedAccountId.value) {
+    taskGroups.value = [];
+    expandedTaskTypes.value = [];
+    return;
+  }
+
   loading.value = true;
   try {
-    const res = await api.get('/logs');
+    const res = await api.get(`/logs/account/${selectedAccountId.value}/grouped`);
     if (res.success) {
-      logs.value = res.data || [];
+      taskGroups.value = res.data?.tasks || [];
+      expandedTaskTypes.value = [];
     }
   } catch (error) {
     console.error('获取日志失败:', error);
+    taskGroups.value = [];
+    expandedTaskTypes.value = [];
     ElMessage.error('获取日志失败');
   } finally {
     loading.value = false;
   }
 };
 
-onMounted(() => {
-  fetchLogs();
+const handleAccountChange = () => {
+  fetchGroupedLogs();
+};
+
+const isTaskExpanded = (taskType) => expandedTaskTypes.value.includes(taskType);
+
+const toggleTaskExpanded = (taskType) => {
+  if (isTaskExpanded(taskType)) {
+    expandedTaskTypes.value = expandedTaskTypes.value.filter((item) => item !== taskType);
+  } else {
+    expandedTaskTypes.value = [...expandedTaskTypes.value, taskType];
+  }
+};
+
+const refreshCurrentView = async () => {
+  await fetchAccounts();
+  await fetchGroupedLogs();
+};
+
+onMounted(async () => {
+  await fetchAccounts();
+  await fetchGroupedLogs();
 });
 </script>
 
@@ -124,6 +236,142 @@ onMounted(() => {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 16px;
+  }
+
+  .header-tip {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #909399;
+  }
+
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+
+  .filter-label {
+    font-size: 14px;
+    color: #606266;
+    white-space: nowrap;
+  }
+
+  .account-select {
+    width: 320px;
+    max-width: 100%;
+  }
+
+  .account-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .account-name {
+    font-size: 16px;
+    font-weight: 600;
+    color: #303133;
+  }
+
+  .task-count {
+    font-size: 13px;
+    color: #909399;
+  }
+
+  .task-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 16px 18px;
+    border-bottom: 1px solid #ebeef5;
+  }
+
+  .task-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .task-title {
+    font-weight: 600;
+    color: #303133;
+  }
+
+  .task-meta {
+    font-size: 12px;
+    color: #909399;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .empty-task-log {
+    color: #909399;
+    padding: 8px 0;
+  }
+
+  .task-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .task-section {
+    border: 1px solid #ebeef5;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #fff;
+  }
+
+  .task-body {
+    padding: 16px 18px;
+  }
+
+  .log-items {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .log-item {
+    border: 1px solid #ebeef5;
+    border-radius: 8px;
+    padding: 12px;
+    background: #fafafa;
+  }
+
+  .log-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+
+  .log-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .log-time {
+    font-size: 12px;
+    color: #909399;
+  }
+
+  .log-message {
+    color: #303133;
+    line-height: 1.6;
+    word-break: break-all;
   }
 }
 </style>

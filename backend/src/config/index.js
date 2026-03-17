@@ -26,6 +26,9 @@ export const config = {
   },
   cron: {
     timezone: 'Asia/Shanghai'
+  },
+  scheduler: {
+    maxConcurrentAccounts: Number(process.env.MAX_CONCURRENT_ACCOUNTS) || 5
   }
 };
 

@@ -529,8 +529,8 @@ export class GameClient {
     });
   }
 
-  async claimAllMail() {
-    return this.sendWithPromise('mail_claimallattachment', { category: 0 });
+  async claimAllMail(category = 0) {
+    return this.sendWithPromise('mail_claimallattachment', { category });
   }
 
   async openBox(itemId = 2001, number = 10) {
@@ -640,6 +640,10 @@ export class GameClient {
 
   async blackMarketPurchase(goodsId = 1) {
     return this.sendWithPromise('store_purchase', { goodsId });
+  }
+
+  async directStoreBuy(goodsId = 1) {
+    return this.sendWithPromise('store_buy', { goodsId });
   }
 
   async claimTreasureFreeReward() {

@@ -141,7 +141,6 @@ export const taskConfigDefinitions = {
     defaultEnabled: true,
     configFields: [
       { key: "blackMarketPurchase", label: "启用黑市采购", type: "switch", default: true },
-      { key: "purchaseGoodsIds", label: "采购清单(goodsId,逗号分隔)", type: "input", default: "1" },
     ],
   },
   collection_claimfreereward: {

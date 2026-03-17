@@ -13,7 +13,14 @@ import { emitPlus } from "./events/index.js";
 import router from "@/router";
 import api from "@utils/api";
 
-const { getArrayBuffer, storeArrayBuffer, deleteArrayBuffer, clearAll } = useIndexedDB();
+const indexedDb = useIndexedDB();
+const {
+  isReady: indexedDbReady,
+  getArrayBuffer,
+  storeArrayBuffer,
+  deleteArrayBuffer,
+  clearAll,
+} = indexedDb;
 
 declare interface TokenData {
   id: string;
@@ -143,6 +150,74 @@ export const useTokenStore = defineStore("tokens", () => {
 
   const getErrorMessage = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
+
+  const sleep = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  const waitForIndexedDBReady = async (timeoutMs = 5000) => {
+    if (indexedDbReady.value) {
+      return true;
+    }
+
+    const startedAt = Date.now();
+    while (!indexedDbReady.value && Date.now() - startedAt < timeoutMs) {
+      await sleep(100);
+    }
+
+    return indexedDbReady.value;
+  };
+
+  const normalizeStorageKey = (value: unknown) => String(value ?? "").trim();
+
+  const mergeLegacyStorageKeys = (...groups: unknown[][]) => {
+    const merged = new Set<string>();
+    groups.flat().forEach((value) => {
+      const key = normalizeStorageKey(value);
+      if (key) {
+        merged.add(key);
+      }
+    });
+    return Array.from(merged);
+  };
+
+  const getBinStorageCandidateKeys = (tokenId: string, token?: TokenData | null) => {
+    const legacyKeys = Array.isArray(token?.legacyStorageKeys)
+      ? token.legacyStorageKeys
+      : [];
+
+    return mergeLegacyStorageKeys(
+      [tokenId],
+      [token?.storageKey],
+      legacyKeys,
+      [token?.name],
+    );
+  };
+
+  const loadStoredBinData = async (tokenId: string, token?: TokenData | null) => {
+    const ready = await waitForIndexedDBReady();
+    if (!ready) {
+      wsLogger.warn(`IndexedDB 尚未就绪，无法读取BIN数据 [${tokenId}]`);
+      return {
+        data: null as ArrayBuffer | null,
+        matchedKey: null as string | null,
+        triedKeys: getBinStorageCandidateKeys(tokenId, token),
+      };
+    }
+
+    const triedKeys = getBinStorageCandidateKeys(tokenId, token);
+    for (const key of triedKeys) {
+      const data = await getArrayBuffer(key);
+      if (data) {
+        return { data, matchedKey: key, triedKeys };
+      }
+    }
+
+    return {
+      data: null as ArrayBuffer | null,
+      matchedKey: null as string | null,
+      triedKeys,
+    };
+  };
 
   const syncProtocolState = (tokenId: string, body: any) => {
     if (!body) return;
@@ -355,8 +430,35 @@ export const useTokenStore = defineStore("tokens", () => {
     }
 
     const token = gameTokens.value.find((t) => t.id === oldId);
+    const legacyStorageKeys = mergeLegacyStorageKeys(
+      [oldId],
+      [token?.storageKey],
+      Array.isArray(token?.legacyStorageKeys) ? token.legacyStorageKeys : [],
+    );
+
+    try {
+      const { data: binData, matchedKey } = await loadStoredBinData(oldId, token);
+      if (binData) {
+        const saved = await storeArrayBuffer(backendId, binData);
+        if (saved && matchedKey && matchedKey !== backendId) {
+          await deleteArrayBuffer(matchedKey);
+        }
+      } else {
+        tokenLogger.warn(`迁移本地BIN数据未命中，保留旧键用于后续刷新 [${oldId} -> ${backendId}]`, {
+          legacyStorageKeys,
+        });
+      }
+    } catch (error) {
+      tokenLogger.warn(`迁移本地BIN数据失败 [${oldId} -> ${backendId}]`, error);
+    }
+
     if (token) {
       token.id = backendId;
+      token.storageKey = backendId;
+      token.legacyStorageKeys = mergeLegacyStorageKeys(
+        legacyStorageKeys,
+        token.legacyStorageKeys || [],
+      );
     }
 
     if (selectedTokenId.value === oldId) {
@@ -372,16 +474,6 @@ export const useTokenStore = defineStore("tokens", () => {
     tokenGroups.value.forEach((group) => {
       group.tokenIds = group.tokenIds.map((id) => (id === oldId ? backendId : id));
     });
-
-    try {
-      const binData = await getArrayBuffer(oldId);
-      if (binData) {
-        await storeArrayBuffer(backendId, binData);
-        await deleteArrayBuffer(oldId);
-      }
-    } catch (error) {
-      tokenLogger.warn(`迁移本地BIN数据失败 [${oldId} -> ${backendId}]`, error);
-    }
   };
 
   const syncAccountToBackend = async (tokenData: any) => {
@@ -540,22 +632,44 @@ export const useTokenStore = defineStore("tokens", () => {
 
   const addToken = (tokenData: TokenData) => {
     let id = tokenData.id || `token_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const {
+      id: _ignoredId,
+      name,
+      token,
+      wsUrl,
+      server,
+      remark,
+      level,
+      profession,
+      sourceUrl,
+      importMethod,
+      avatar,
+      ...extraFields
+    } = tokenData;
     const newToken = {
+      ...extraFields,
       id: id,
-      name: tokenData.name,
-      token: tokenData.token, // 保存原始Base64 token
-      wsUrl: tokenData.wsUrl || null, // 可选的自定义WebSocket URL
-      server: tokenData.server || "",
-      remark: tokenData.remark || "", // 备注信息
-      level: tokenData.level || 1,
-      profession: tokenData.profession || "",
+      name,
+      token, // 保存原始Base64 token
+      wsUrl: wsUrl || null, // 可选的自定义WebSocket URL
+      server: server || "",
+      remark: remark || "", // 备注信息
+      level: level || 1,
+      profession: profession || "",
       createdAt: new Date().toISOString(),
       lastUsed: new Date().toISOString(),
       isActive: true,
       // URL获取相关信息
-      sourceUrl: tokenData.sourceUrl || null, // Token来源URL（用于刷新）
-      importMethod: tokenData.importMethod || "manual", // 导入方式：manual 或 url
-      avatar: tokenData.avatar || "", // 用户头像
+      sourceUrl: sourceUrl || null, // Token来源URL（用于刷新）
+      importMethod: importMethod || "manual", // 导入方式：manual 或 url
+      avatar: avatar || "", // 用户头像
+      storageKey: normalizeStorageKey((extraFields as any).storageKey || id),
+      legacyStorageKeys: mergeLegacyStorageKeys(
+        Array.isArray((extraFields as any).legacyStorageKeys)
+          ? (extraFields as any).legacyStorageKeys
+          : [],
+        [normalizeStorageKey((extraFields as any).storageKey || id)],
+      ),
     };
 
     gameTokens.value.push(newToken);
@@ -701,29 +815,29 @@ export const useTokenStore = defineStore("tokens", () => {
         gameToken.importMethod === "wxQrcode"
       ) {
         // Bin形式token刷新
-        let userToken: ArrayBuffer | null = await getArrayBuffer(tokenId);
-        let usedOldKey = false;
-        
-        if (!userToken) {
-          const tokenByName = await getArrayBuffer(gameToken.name);
-          if (tokenByName) {
-            userToken = tokenByName;
-            usedOldKey = true;
-          }
-        }
+        const { data: userToken, matchedKey, triedKeys } = await loadStoredBinData(tokenId, gameToken);
 
         if (userToken) {
           const token = await transformToken(userToken);
-          updateToken(tokenId, { ...gameToken, token });
-          if (usedOldKey) {
+          updateToken(tokenId, {
+            ...gameToken,
+            token,
+            storageKey: tokenId,
+            legacyStorageKeys: mergeLegacyStorageKeys(
+              gameToken.legacyStorageKeys || [],
+              matchedKey ? [matchedKey] : [],
+              [gameToken.storageKey],
+            ),
+          });
+          if (matchedKey && matchedKey !== tokenId) {
             const saved = await storeArrayBuffer(tokenId, userToken);
             if (saved) {
-              await deleteArrayBuffer(gameToken.name);
+              await deleteArrayBuffer(matchedKey);
             }
           }
           refreshSuccess = true;
         } else {
-          wsLogger.error(`Token刷新失败: 未找到BIN数据 [${tokenId}]`);
+          wsLogger.error(`Token刷新失败: 未找到BIN数据 [${tokenId}]`, { triedKeys });
         }
       }
     } catch (error) {

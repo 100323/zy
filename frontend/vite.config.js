@@ -13,9 +13,6 @@ export default defineConfig({
           if (id.includes('element-plus') || id.includes('@element-plus')) {
             return 'vendor-element';
           }
-          if (id.includes('naive-ui') || id.includes('vueuc') || id.includes('vooks')) {
-            return 'vendor-naive';
-          }
           if (id.includes('@arco-design')) {
             return 'vendor-arco';
           }
