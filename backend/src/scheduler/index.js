@@ -321,7 +321,13 @@ export async function executeTask(task) {
       return result;
     } catch (error) {
       console.error(`❌ 任务执行失败: ${accountName} - ${task_type}:`, error.message);
-      addTaskLog(accountId, task_type, shouldIgnoreFailure(error) ? 'ignored' : 'error', error.message);
+      addTaskLog(
+        accountId,
+        task_type,
+        shouldIgnoreFailure(error) ? 'ignored' : 'error',
+        error.message,
+        error?.details ? JSON.stringify(error.details) : null
+      );
       if (task.id) {
         markTaskRunTime(task.id, new Date().toISOString(), calculateNextRunAt(task.cron_expression));
       }
@@ -505,7 +511,17 @@ async function flushDailyRewardClaim(accountId, reason = 'debounced') {
     } catch (error) {
       entry.dirty = true;
       console.error(`❌ 自动收尾补领失败: ${flushContext.accountName}:`, error.message);
-      addTaskLog(accountId, 'DAILY_TASK_CLAIM', 'error', `自动收尾补领失败: ${error.message}`);
+      addTaskLog(
+        accountId,
+        'DAILY_TASK_CLAIM',
+        'error',
+        `自动收尾补领失败: ${error.message}`,
+        error?.details ? JSON.stringify({
+          autoFlush: true,
+          reason,
+          ...(error.details || {}),
+        }) : null
+      );
       if (entry.retryCount < DAILY_REWARD_MAX_RETRIES && !entry.timer) {
         entry.retryCount += 1;
         entry.timer = setTimeout(() => {

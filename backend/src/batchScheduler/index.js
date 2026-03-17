@@ -326,7 +326,14 @@ export async function executeBatchTask(task) {
             }
           } catch (error) {
             console.error(`❌ 账号 ${account.name} 执行任务 ${taskType} 失败:`, error.message);
-            addBatchTaskLogEntry(task.id, account.id, taskType, shouldIgnoreFailure(error) ? 'ignored' : 'error', error.message);
+            addBatchTaskLogEntry(
+              task.id,
+              account.id,
+              taskType,
+              shouldIgnoreFailure(error) ? 'ignored' : 'error',
+              error.message,
+              error?.details ? JSON.stringify(error.details) : null
+            );
           }
         }
 
@@ -341,7 +348,14 @@ export async function executeBatchTask(task) {
               rewardResult?.message || '收尾补领奖励检查完成'
             );
           } catch (error) {
-            addBatchTaskLogEntry(task.id, account.id, 'TASK_REWARD', shouldIgnoreFailure(error) ? 'ignored' : 'error', error.message || '收尾补领失败');
+            addBatchTaskLogEntry(
+              task.id,
+              account.id,
+              'TASK_REWARD',
+              shouldIgnoreFailure(error) ? 'ignored' : 'error',
+              error.message || '收尾补领失败',
+              error?.details ? JSON.stringify(error.details) : null
+            );
           }
         }
       }).catch((error) => {

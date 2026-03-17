@@ -55,6 +55,14 @@ function stableStringify(value) {
   }
 }
 
+function createDetailedError(message, details = null) {
+  const error = new Error(message);
+  if (details && typeof details === 'object') {
+    error.details = details;
+  }
+  return error;
+}
+
 function pickArenaTargetId(target) {
   if (!target || typeof target !== 'object') {
     return null;
@@ -199,6 +207,19 @@ async function tryClaim(results, label, action) {
   } catch (error) {
     const message = normalizeErrorMessage(error);
     const noop = isNoopError(message);
+    results.push({ name: label, ok: false, error: message, noop });
+    return { ok: false, noop, error: message };
+  }
+}
+
+async function tryClaimWithExtraNoopPatterns(results, label, action, extraNoopPatterns = []) {
+  try {
+    const result = await action();
+    results.push({ name: label, ok: true, result });
+    return { ok: true, noop: false };
+  } catch (error) {
+    const message = normalizeErrorMessage(error);
+    const noop = isNoopError(message) || extraNoopPatterns.some((pattern) => message.includes(pattern));
     results.push({ name: label, ok: false, error: message, noop });
     return { ok: false, noop, error: message };
   }
@@ -356,11 +377,7 @@ export async function executeDailyTaskClaimScheduledTask(client) {
   const results = [];
   let successCount = 0;
 
-  const taskIds = (
-    beforeState
-      ? beforeState.readyTaskIds
-      : DEFAULT_DAILY_TASK_IDS
-  )
+  const taskIds = DEFAULT_DAILY_TASK_IDS
     .filter((value, index, list) => list.indexOf(value) === index)
     .sort((a, b) => a - b);
 
@@ -376,20 +393,22 @@ export async function executeDailyTaskClaimScheduledTask(client) {
     await sleep(150);
   }
 
-  const dailyRewardResult = await tryClaim(
+  const dailyRewardResult = await tryClaimWithExtraNoopPatterns(
     results,
     '日常任务宝箱(自动)',
-    () => client.claimDailyReward(0)
+    () => client.claimDailyReward(0),
+    ['出了点小问题，请尝试重启游戏解决～']
   );
   if (dailyRewardResult.ok) {
     successCount += 1;
   }
   await sleep(120);
 
-  const weeklyRewardResult = await tryClaim(
+  const weeklyRewardResult = await tryClaimWithExtraNoopPatterns(
     results,
     '周常任务宝箱(自动)',
-    () => client.claimWeeklyReward(0)
+    () => client.claimWeeklyReward(0),
+    ['出了点小问题，请尝试重启游戏解决～']
   );
   if (weeklyRewardResult.ok) {
     successCount += 1;
@@ -411,7 +430,18 @@ export async function executeDailyTaskClaimScheduledTask(client) {
 
   if (successCount === 0) {
     if (hardErrors.length > 0) {
-      throw new Error(hardErrors[0].error || '每日任务奖励领取失败');
+      throw createDetailedError(
+        hardErrors[0].error || '每日任务奖励领取失败',
+        {
+          results,
+          claimedCount: 0,
+          changed,
+          beforeDailyPoint: beforeState?.dailyPoint ?? null,
+          afterDailyPoint: afterState?.dailyPoint ?? null,
+          checkedTaskIds: taskIds,
+          hardErrors,
+        }
+      );
     }
 
     return {

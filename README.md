@@ -1,701 +1,748 @@
-# XYZW Web Helper
+﻿# XYZW Token Manager
 
-<div align="center">
+一个基于 **Vue 3 + Vite + Express** 的前后端分离项目，用于管理 XYZW 游戏 Token、建立 WebSocket 通信、执行单账号/批量任务，以及查看任务日志与统计数据。
 
-![XYZW Logo](public/xiaoyugan.png)
-
-**🎮 咸鱼自动化web平台**
-
-[![Vue 3](https://img.shields.io/badge/Vue-3.4+-4FC08D?style=flat&logo=vue.js&logoColor=white)](https://vuejs.org/)
-[![Vite](https://img.shields.io/badge/Vite-5.0+-646CFF?style=flat&logo=vite&logoColor=white)](https://vitejs.dev/)
-[![Naive UI](https://img.shields.io/badge/Naive%20UI-2.38+-18A058?style=flat&logo=vue.js&logoColor=white)](https://www.naiveui.com/)
-[![WebSocket](https://img.shields.io/badge/WebSocket-BON%20Protocol-FF6B6B?style=flat&logo=websocket&logoColor=white)](https://developer.mozilla.org/en-US/docs/Web/API/WebSocket)
-[![License](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg?style=flat)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
-
-基于Vue 3 + Vite的现代化XYZW游戏辅助工具，支持Token管理、WebSocket通信、游戏自动化等功能。
-
-</div>
+> 当前仓库以 `frontend/` 和 `backend/` 两个子项目为主。
+> 旧版 README 已不再适配当前结构，本文件已按现状重新整理，并补充了服务器部署说明。
 
 ---
 
-## ✨ 核心特性
+## 1. 项目概览
 
-### 🔐 Token管理系统
-- **双重导入方式**：支持手动输入和URL接口获取两种Token导入方式
-- **Base64解码支持**：自动识别和解析多种Base64格式的游戏Token
-- **多角色管理**：同时管理多个游戏账号，支持角色信息展示
-- **本地存储**：安全的本地数据存储，无需后端服务器
-- **Token验证**：自动验证Token有效性和格式完整性
-- **自动刷新**：支持URL获取的Token自动刷新功能
+### 前端（`frontend/`）
+- Vue 3 + Vite
+- Pinia 状态管理
+- Vue Router
+- Element Plus / Arco Design / Naive UI 混合 UI 方案
+- Token 导入、账号管理、任务配置、批量调度、日志查看
+- 开发环境通过 Vite 代理 `/api` 到后端 `3001`
 
-### 🌐 WebSocket通信
-- **BON协议支持**：内置Binary Object Notation协议编解码
-- **多重加密**：支持LX、X、XTM等多种加密方式
-- **自动重连**：智能断线重连机制，确保连接稳定
-- **消息队列**：内置消息队列系统，支持批量发送和响应处理
+### 后端（`backend/`）
+- Node.js + Express
+- SQLite（基于 `sql.js` 的本地数据库文件）
+- `ws` WebSocket 通信
+- `node-cron` 定时调度
+- 提供认证、账号、任务、日志、统计、批量调度等 API
 
-### 🎮 游戏功能
-- **日常任务管理**：自动化日常任务执行和奖励领取
-- **角色状态监控**：实时显示角色等级、职业、服务器等信息
-- **团队管理**：队伍状态查看和管理功能
-- **爬塔进度**：爬塔状态追踪和数据分析
-
-### 🛠️ 开发工具
-- **消息测试器**：BON协议消息编码/解码测试工具
-- **WebSocket调试**：实时WebSocket连接和消息调试
-- **协议验证**：游戏协议消息格式验证工具
-
-### 🎨 主题系统
-- **智能主题切换**：支持深浅主题无缝切换，自动适应系统主题偏好
-- **实时响应**：主题切换立即生效，无需刷新页面
-- **全组件覆盖**：完整支持Naive UI组件库的深色主题
-- **记忆偏好**：自动保存用户主题选择，下次访问自动应用
-- **统一设计**：所有页面使用统一的圆形主题切换按钮
+### 当前默认端口
+- 前端开发服务：`http://localhost:3000`
+- 后端开发服务：`http://localhost:3001`
+- 后端健康检查：`http://localhost:3001/api/health`
 
 ---
 
-## 🏗️ 技术架构
+## 2. 主要功能
 
-### 前端技术栈
-```
-Vue 3.4+          # 渐进式JavaScript框架
-├── Composition API    # Vue 3组合式API
-├── <script setup>     # 单文件组件语法糖
-└── Reactive System    # 响应式数据系统
+### Token / 账号管理
+- 手动导入 Token
+- 支持 URL 来源 Token 刷新
+- 本地保存账号与备注信息
+- 管理多个游戏账号
 
-Vite 5.0+         # 现代化构建工具
-├── HMR               # 热模块替换
-├── ES6+             # 现代JavaScript支持
-└── SCSS             # CSS预处理器
+### WebSocket / 协议能力
+- 对接游戏 WebSocket 服务
+- 内置 BON 协议相关处理能力
+- 支持消息发送、响应匹配、自动重连、心跳维护
 
-Naive UI 2.38+    # Vue 3组件库
-├── Theme System     # 主题系统
-├── Icon Library     # 图标库
-└── Responsive      # 响应式设计
+### 自动化任务
+- 单账号任务执行
+- 批量任务调度
+- 定时任务
+- 任务日志与执行状态记录
 
-Pinia 2.1+        # 状态管理
-├── Store Pattern    # 存储模式
-├── DevTools        # 开发工具
-└── Composition API  # 组合式API支持
-```
+### 后台数据能力
+- 用户认证
+- 账号加密存储
+- 任务配置持久化
+- 统计接口
+- 邀请码相关接口
 
-### 核心架构设计
+---
 
-```
-src/
-├── 🎯 stores/              # Pinia状态管理
-│   ├── tokenStore.js      # Token管理核心
-│   ├── gameRoles.js       # 游戏角色数据
-│   └── localTokenManager.js # 本地存储管理
-│
-├── 🔧 composables/         # Vue 3组合式函数
-│   └── useTheme.js        # 主题管理系统
-│
-├── 🌐 utils/               # 核心工具库
-│   ├── bonProtocol.js     # BON协议实现
-│   ├── xyzwWebSocket.js   # WebSocket客户端
-│   ├── gameCommands.js    # 游戏命令封装
-│   └── wsAgent.js         # 连接代理
-│
-├── 📱 views/               # 主要页面
-│   ├── TokenImport.vue    # Token导入管理
-│   ├── Dashboard.vue      # 主控制台
-│   ├── DailyTasks.vue     # 日常任务
-│   ├── GameFeatures.vue   # 游戏功能
-│   └── Profile.vue        # 用户设置
-│
-└── 🧩 components/         # 可复用组件
-    ├── TokenManager.vue   # Token管理器
-    ├── ThemeToggle.vue    # 主题切换按钮
-    ├── GameStatus.vue     # 游戏状态组件
-    ├── DailyTaskCard.vue  # 任务卡片
-    ├── MessageTester.vue  # 消息测试器
-    └── WebSocketTester.vue # WebSocket调试器
+## 3. 项目结构
+
+```text
+.
+├─ frontend/                 # Vue 3 前端
+│  ├─ src/
+│  ├─ public/
+│  ├─ package.json
+│  └─ vite.config.js
+├─ backend/                  # Express 后端
+│  ├─ src/
+│  │  ├─ routes/
+│  │  ├─ scheduler/
+│  │  ├─ batchScheduler/
+│  │  ├─ database/
+│  │  ├─ middleware/
+│  │  └─ utils/
+│  ├─ data/                  # 本地数据库目录（运行后自动生成）
+│  └─ package.json
+├─ docker/                   # 现有 Docker / Nginx 相关资源
+├─ AGENTS.md                 # 仓库开发说明
+└─ README.md
 ```
 
 ---
 
-## 🚀 快速开始
+## 4. 运行环境要求
 
-### 环境要求
+建议环境：
+
+- Node.js `>= 18`
+- npm `>= 9` 或 pnpm `>= 9`
+- Windows / Linux / macOS 均可
+
+> 本项目当前没有根目录 `package.json`，因此需要分别安装 `frontend` 和 `backend` 的依赖。
+
+---
+
+## 5. 本地开发
+
+### 5.1 克隆项目
 
 ```bash
-Node.js >= 18.0.0
-pnpm >= 9.0.0 (推荐)
+git clone <你的仓库地址>
+cd <仓库目录>
 ```
 
-### 安装与运行
+### 5.2 安装依赖
+
+#### 方式一：使用 npm
 
 ```bash
-# 克隆项目
-git clone https://github.com/your-repo/xyzw-web-helper.git
-cd xyzw-web-helper
+cd backend
+npm install
 
-# 安装依赖
+cd ../frontend
+npm install
+```
+
+#### 方式二：使用 pnpm
+
+```bash
+cd backend
 pnpm install
 
-# 启动开发服务器
-pnpm run dev
-
-# 构建生产版本
-pnpm run build
-
-# 预览生产构建
-pnpm run preview
+cd ../frontend
+pnpm install
 ```
-
-### 开发命令
-
-```bash
-pnpm run dev      # 启动开发服务器 (端口3000)
-pnpm run build    # 构建生产版本
-pnpm run preview  # 预览生产构建
-pnpm run lint     # 代码检查和修复
-pnpm run format   # 代码格式化
-```
-
-### 部署代理服务 (Cloudflare Pages)
-
-本项目推荐使用 Cloudflare Pages 进行部署，内置了对 API 代理的支持。
-
-1. **准备代码**：https://github.com/w1249178256/xyzw_web_helper.git
-2. **连接仓库**：在 Cloudflare Dashboard 中选择 "Pages" -> "Connect to Git"，选择本项目仓库。
-3. **构建设置**：
-    - **构建命令**: `npm run build`
-    - **构建输出目录**: `dist`
-4. **环境变量**（可选）：可以在 Cloudflare Pages 设置中添加环境变量。
-5. **部署**：点击 "Save and Deploy"。
-
-Cloudflare Pages 会自动识别 `dist/_worker.js` 并启用 Advanced Mode，无需额外配置即可实现 API 代理和静态资源托管。
-
-### 本地预览 (Cloudflare Pages)
-
-为了在本地模拟 Cloudflare Pages 环境（包括 `worker.js` 的代理功能），请使用 `wrangler`：
-
-1. **安装 wrangler**: `npm install -g wrangler`
-2. **构建项目**: `npm run build`
-3. **启动预览**: `npx wrangler pages dev dist`
-4. **访问**: 打开浏览器访问 `http://localhost:8787`
-
-> 注意：`npm run preview` 仅提供静态文件预览，无法执行 `worker.js` 中的代理逻辑。请使用 `wrangler` 进行全功能预览。
-
-### 部署TokenURL获取服务 (Python)
-
-本项目提供了一个基于 Python Flask 的配套后端服务，用于管理游戏 bin 文件并提供 Token 获取接口。
-
-**主要功能：**
-*   **多用户管理**：支持用户注册、登录、注销，每个用户拥有独立的文件存储空间。
-*   **Web 管理界面**：可视化管理 bin 文件，支持批量上传、删除。
-*   **安全认证**：内置登录认证机制，保护接口安全。
-*   **专属 Token**：为每个用户生成唯一的 Token，用于构建安全的访问链接。
-
-#### 1. 环境准备
-
-确保服务器安装了 Python 3.x，并安装依赖：
-
-```bash
-cd server
-pip install -r requirements.txt
-```
-
-#### 2. 配置
-
-服务启动时会自动检查 `server/config.json`，如果不存在则创建默认配置（包含默认管理员账号）。
-
-> **注意**：默认管理员账号为 `admin`，密码为 `admin123`。建议首次登录后修改密码或创建新账号。
-
-#### 3. 启动服务
-
-```bash
-python app.py
-```
-
-服务将在 `0.0.0.0:5000` 启动。
-
-#### 4. 使用方式
-
-1.  **注册/登录**：
-    访问 `http://<你的服务器IP>:5000`。
-    *   默认管理员：`admin` / `admin123`
-    *   普通用户：点击“注册新账号”创建自己的账号。
-
-2.  **上传 bin 文件**：
-    登录后，点击“上传”按钮，选择一个或多个 `.bin` 文件进行上传。文件将存储在您的专属目录下。
-
-3.  **获取 Token URL**：
-    上传成功后，列表中会显示每个文件的 Token URL。点击“复制完整链接”按钮。
-
-    URL 格式示例（包含用户专属 Token）：
-    ```
-    http://<你的服务器IP>:5000/<UserToken>/<bin文件名>/<base64编码>
-    ```
-
-4.  **账号管理**：
-    *   **修改密码**：点击“修改密码”按钮，在弹出的窗口中输入新密码进行修改。
-    *   **注销账号**：普通用户可以点击“注销账号”来永久删除账号及所有数据。管理员账号不可注销。
 
 ---
 
-## 📖 使用指南
+## 6. 启动项目
 
-### 1. Token导入与管理
+### 6.1 分别启动
 
-#### 支持的导入方式
+#### 启动后端
 
-##### 方式一：手动输入
-支持多种Base64格式的Token字符串：
-
-```javascript
-// 纯Base64格式
-"eyJ0b2tlbiI6ImFiY2QxMjM0In0="
-
-// 带前缀格式
-"token:eyJ0b2tlbiI6ImFiY2QxMjM0In0="
+```bash
+cd backend
+npm run dev
 ```
 
-##### 方式二：URL接口获取
-通过API接口自动获取Token，支持定时刷新：
+#### 启动前端
 
-```javascript
-// API接口返回格式
-{
-  "token": "eyJ0b2tlbiI6ImFiY2QxMjM0In0=",  // 必需字段
-  "server": "风云服"                        // 可选字段
+```bash
+cd frontend
+npm run dev
+```
+
+启动成功后访问：
+- 前端：`http://localhost:3000`
+- 后端：`http://localhost:3001`
+
+### 6.2 Windows 一键启动（可选）
+
+如果你本地保留了根目录的 `start-dev.bat`，可以双击它分别拉起前后端开发服务。
+
+---
+
+## 7. 常用命令
+
+### 前端
+
+```bash
+cd frontend
+npm run dev         # 启动开发服务
+npm run build       # 构建生产包
+npm run preview     # 本地预览构建结果
+npm run typecheck   # TypeScript 类型检查
+```
+
+### 后端
+
+```bash
+cd backend
+npm run dev         # 开发模式（watch）
+npm run start       # 生产模式启动
+npm run test        # 后端测试
+```
+
+---
+
+## 8. 配置说明
+
+### 后端配置
+
+后端配置位于：
+- `backend/src/config/index.js`
+
+默认配置包括：
+- `PORT`：后端端口，默认 `3001`
+- `HOST`：监听地址，默认 `0.0.0.0`
+- `JWT_SECRET`
+- `ENCRYPTION_KEY`
+- `DB_PATH`
+- `GAME_CLIENT_VERSION`
+- `GAME_BATTLE_VERSION`
+- `MAX_CONCURRENT_ACCOUNTS`
+
+如果要部署到服务器，建议通过环境变量覆盖这些配置，而不是直接修改源码。
+
+### 前端代理
+
+前端开发代理位于：
+- `frontend/vite.config.js`
+
+默认会将 `/api` 代理到：
+- `http://localhost:3001`
+
+---
+
+## 9. 数据与存储说明
+
+### 前端
+前端主要使用浏览器本地存储：
+- `localStorage`
+- IndexedDB
+
+### 后端
+后端默认将数据库写入：
+- `backend/data/xyzw.db`
+
+> 该数据库文件属于运行时数据，不建议提交到 GitHub。
+> 仓库发布时应忽略数据库文件，首次启动后端时会自动创建。
+
+---
+
+## 10. 发布到 GitHub 的建议
+
+为了让仓库更干净、体积更小，**不要把依赖目录和运行产物提交到 GitHub**。
+
+### 不建议提交的内容
+- `node_modules/`
+- `frontend/dist/`
+- `backend/data/*.db`
+- 日志文件
+- 本地调试文件
+- 本机生成的缓存文件
+
+### 建议保留的内容
+- 源代码
+- `package.json`
+- 锁文件（如 `pnpm-lock.yaml` / `package-lock.json`）
+- README
+- 配置文件
+- Docker 文件
+
+### 为什么不提交依赖目录
+1. `node_modules` 体积大，仓库会非常臃肿
+2. 很多包包含平台相关二进制，跨系统容易出问题
+3. CI/CD、服务器部署时一般都会重新执行安装命令
+4. 团队协作时，依赖应通过 `package.json` + lockfile 还原，而不是直接传整个依赖目录
+
+---
+
+## 11. 部署到服务器时的推荐流程
+
+### 推荐做法
+把代码上传到服务器后，再安装依赖：
+
+```bash
+# 后端
+cd backend
+npm install
+npm run start
+
+# 前端（如果前后端分离部署）
+cd frontend
+npm install
+npm run build
+```
+
+### 是否“去掉依赖目录”更方便部署？
+**是的，通常更方便。**
+
+更准确地说：
+- 不是删除 `package.json`
+- 而是**不要把 `node_modules` 提交到仓库**
+- 服务器在拉取代码后，再根据 `package.json` / lockfile 自动安装依赖
+
+这样做的好处：
+- 仓库更小
+- 拉取更快
+- 减少平台兼容问题
+- 更符合 Node.js 项目的标准部署方式
+
+---
+
+## 12. 新用户拿到项目后的使用方式
+
+新用户克隆仓库后，只需要执行：
+
+```bash
+cd backend
+npm install
+
+cd ../frontend
+npm install
+```
+
+然后分别启动：
+
+```bash
+cd backend
+npm run dev
+
+cd ../frontend
+npm run dev
+```
+
+也就是说：
+- 仓库里不放依赖目录
+- 用户第一次使用时自行安装
+- 后续部署服务器时也按同样方式处理
+
+---
+
+## 13. 建议的 Git 提交策略
+
+发布前建议确认以下内容：
+
+```bash
+git status
+```
+
+重点检查不要提交：
+- 数据库文件
+- 本地缓存
+- 日志
+- `node_modules`
+- `dist`
+- 个人调试文件
+
+如果你已经误提交过数据库或构建产物，需要先从 Git 追踪中移除，再提交新的 `.gitignore` 规则。
+
+---
+
+## 14. 服务器部署指南
+
+这一节补充适合当前项目的实际部署方式。当前项目比较适合两种部署思路：
+
+### 方案 A：一体化部署（推荐上手）
+即：
+- 先构建前端 `frontend/dist`
+- 再启动后端 `backend`
+- 后端直接托管前端构建产物
+
+这套方案适合：
+- 单台 VPS
+- 个人项目
+- 快速上线
+- 不想把前后端拆开维护
+
+#### 为什么可以这样做
+当前后端代码中已经包含静态资源托管逻辑，会读取：
+- `frontend/dist`
+
+也就是说，你在服务器上把前端构建出来以后，后端可以直接把它一起对外提供。
+
+#### 一体化部署步骤
+
+```bash
+# 1) 拉代码
+git clone <你的仓库地址>
+cd <仓库目录>
+
+# 2) 安装后端依赖
+cd backend
+npm install
+
+# 3) 安装前端依赖并构建
+cd ../frontend
+npm install
+npm run build
+
+# 4) 回到后端启动生产服务
+cd ../backend
+npm run start
+```
+
+启动后默认监听：
+- `http://0.0.0.0:3001`
+
+对外通常再配合 Nginx 做反向代理。
+
+---
+
+### 方案 B：前后端分离部署
+即：
+- 前端构建后交给 Nginx 托管
+- 后端单独运行在 `3001`
+- Nginx 把 `/api` 转发给后端
+
+这套方案适合：
+- 想把静态资源交给 Nginx
+- 访问性能更稳定
+- 后续准备接 HTTPS / CDN
+
+---
+
+## 15. 使用 PM2 部署后端
+
+如果你在 Linux 服务器上部署 Node.js 服务，推荐使用 PM2 托管后端进程。
+
+### 15.1 安装 PM2
+
+```bash
+npm install -g pm2
+```
+
+### 15.2 首次部署
+
+```bash
+git clone <你的仓库地址>
+cd <仓库目录>
+
+cd backend
+npm install
+
+cd ../frontend
+npm install
+npm run build
+
+cd ../backend
+pm2 start src/index.js --name xyzw-backend
+```
+
+### 15.3 常用 PM2 命令
+
+```bash
+pm2 list
+pm2 logs xyzw-backend
+pm2 restart xyzw-backend
+pm2 stop xyzw-backend
+pm2 delete xyzw-backend
+pm2 save
+pm2 startup
+```
+
+### 15.4 推荐使用环境变量启动
+
+```bash
+cd backend
+PORT=3001 HOST=0.0.0.0 JWT_SECRET=your_jwt_secret ENCRYPTION_KEY=your_encrypt_key pm2 start src/index.js --name xyzw-backend
+```
+
+如果你是 Ubuntu / Debian，常见写法也可以这样：
+
+```bash
+export PORT=3001
+export HOST=0.0.0.0
+export JWT_SECRET=your_jwt_secret
+export ENCRYPTION_KEY=your_encrypt_key
+pm2 start src/index.js --name xyzw-backend
+```
+
+### 15.5 推荐的 PM2 ecosystem 配置
+
+你也可以在仓库根目录自行创建 `ecosystem.config.cjs`：
+
+```js
+module.exports = {
+  apps: [
+    {
+      name: 'xyzw-backend',
+      cwd: './backend',
+      script: 'src/index.js',
+      instances: 1,
+      exec_mode: 'fork',
+      env: {
+        NODE_ENV: 'production',
+        HOST: '0.0.0.0',
+        PORT: 3001,
+        JWT_SECRET: 'replace_me',
+        ENCRYPTION_KEY: 'replace_me',
+        DB_PATH: './data/xyzw.db',
+        MAX_CONCURRENT_ACCOUNTS: 5,
+      },
+    },
+  ],
+};
+```
+
+启动方式：
+
+```bash
+pm2 start ecosystem.config.cjs
+pm2 save
+```
+
+> 建议把敏感配置改为服务器环境变量，不要把真实密钥直接提交到仓库。
+
+---
+
+## 16. 使用 Nginx 部署
+
+Nginx 一般承担两个职责：
+- 反向代理后端 API
+- 托管前端静态文件或把流量转发给后端
+
+### 16.1 方式一：Nginx 反代后端（一体化部署推荐）
+
+这种模式下：
+- 前端先构建到 `frontend/dist`
+- 后端负责同时提供页面和 API
+- Nginx 只需要把 80/443 转给后端 `3001`
+
+示例配置：
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    client_max_body_size 50m;
+
+    location / {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 }
 ```
 
-##### 方式三：批量导入
-支持通过bin文件或多行输入同时导入多个Token。
+适用场景：
+- 简单
+- 改动少
+- 上线快
 
-支持伏羲bin文件格式的Token批量导入。
+### 16.2 方式二：Nginx 托管前端静态文件 + 反代后端 API
 
-#### 导入步骤
-1. 进入 **Token管理** 页面
-2. 选择导入方式：
-   - **手动输入**：粘贴Base64编码的Token字符串
-   - **URL获取**：输入Token获取接口地址
-3. 系统自动解析和验证Token格式
-4. 设置角色名称和基本信息
-5. 保存到本地存储
+这种模式下：
+- `frontend/dist` 复制到 Nginx 站点目录
+- 后端继续跑在 `3001`
+- `/api` 代理到后端
 
-#### Token刷新功能
-- 通过URL方式导入的Token支持一键刷新
-- 刷新时会重新请求原API接口获取最新Token
-- 自动重新建立WebSocket连接
-- 保持角色信息和配置不变
+示例配置：
 
-### 2. WebSocket连接配置
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
 
-纯本地连接存储，不用担心封号及账号泄漏风险
+    root /var/www/xyzw/frontend/dist;
+    index index.html;
 
-### 3. BON协议消息处理
-
-```javascript
-import { bon, GameMessages } from '@/utils/bonProtocol.js';
-
-// 编码消息
-const message = GameMessages.getRoleInfo(0, 12345);
-const encoded = bon.encode(message.body);
-
-// 解码消息
-const decoded = bon.decode(receivedData);
-```
-
-### 4. 主题系统使用
-
-#### 主题切换功能
-- **位置**：在页面右上角可以找到圆形的主题切换按钮
-- **图标说明**：
-  - ☀️ 太阳图标：当前为浅色主题，点击切换到深色主题
-  - 🌙 月亮图标：当前为深色主题，点击切换到浅色主题
-- **自动记忆**：用户的主题选择会自动保存，下次访问时自动应用
-- **系统同步**：首次访问时会自动检测系统主题偏好
-
-#### 技术实现特点
-```javascript
-// 使用主题切换组件
-import ThemeToggle from '@/components/ThemeToggle.vue'
-import { useTheme } from '@/composables/useTheme'
-
-const { isDark, toggleTheme } = useTheme()
-```
-
-### 5. 游戏功能使用
-
-#### 日常任务自动化
-- 自动签到奖励领取
-- 日常任务完成状态检查
-- 奖励自动领取
-- 任务进度实时追踪
-
-#### 角色状态监控
-- 实时等级和经验显示
-- 职业和技能信息
-- 服务器状态监控
-- 在线时长统计
-
----
-
-## 🔧 配置说明
-
-### Vite配置 (vite.config.js)
-
-```javascript
-export default defineConfig({
-  plugins: [vue()],
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, 'src'),
-      '@components': path.resolve(__dirname, 'src/components'),
-      '@utils': path.resolve(__dirname, 'src/utils'),
-      '@stores': path.resolve(__dirname, 'src/stores')
+    location / {
+        try_files $uri $uri/ /index.html;
     }
-  },
-  server: {
-    port: 3000,
-    proxy: {
-      '/api': {
-        target: 'http://xyzw.my',
-        changeOrigin: true
-      }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
-  }
-});
+}
 ```
 
-### 环境变量
+### 16.3 Nginx + HTTPS（Let's Encrypt）
+
+如果你已经绑定域名，建议使用 Certbot：
 
 ```bash
-# .env.development
-VITE_API_BASE_URL=http://localhost:3000
-VITE_WS_URL=wss://game.xyzw.my/ws
-
-# .env.production
-VITE_API_BASE_URL=https://api.xyzw.my
-VITE_WS_URL=wss://game.xyzw.my/ws
+sudo apt update
+sudo apt install nginx certbot python3-certbot-nginx -y
+sudo certbot --nginx -d your-domain.com
 ```
 
----
+续期测试：
 
-## 🧪 测试与调试
-
-### 内置测试工具
-
-#### 1. 消息测试器 (MessageTester.vue)
-- BON协议编码/解码测试
-- 消息格式验证
-- 加密/解密功能测试
-
-#### 2. WebSocket调试器 (WebSocketTester.vue)
-- 实时连接状态监控
-- 消息发送和接收测试
-- 连接参数配置
-
-#### 3. 协议验证工具
-```javascript
-// 测试BON编码
-const testData = { cmd: "test", data: { id: 123 } };
-const encoded = bon.encode(testData);
-const decoded = bon.decode(encoded);
-console.log('编码测试:', decoded);
-
-// 测试加密
-const encrypted = getEnc('x').encrypt(encoded);
-const decrypted = getEnc('x').decrypt(encrypted);
-```
-
-### 调试技巧
-
-1. **浏览器开发工具**：使用Vue DevTools监控组件状态
-2. **网络面板**：监控WebSocket消息传输
-3. **控制台日志**：查看详细的协议处理日志
-4. **本地存储检查**：验证Token和配置存储
-
----
-
-## 📦 项目结构详解
-
-### 状态管理架构
-
-```javascript
-// tokenStore.js - 核心Token管理
-const useTokenStore = defineStore('tokens', () => {
-  const gameTokens = ref([]);           // Token列表
-  const selectedTokenId = ref(null);    // 当前选中Token
-  const wsConnections = ref({});        // WebSocket连接池
-  
-  // Token管理方法
-  const addToken = (tokenData) => { /* ... */ };
-  const updateToken = (id, updates) => { /* ... */ };
-  const removeToken = (id) => { /* ... */ };
-  
-  // WebSocket管理
-  const connectWebSocket = (tokenId) => { /* ... */ };
-  const disconnectWebSocket = (tokenId) => { /* ... */ };
-  
-  return { 
-    gameTokens, selectedTokenId, wsConnections,
-    addToken, updateToken, removeToken,
-    connectWebSocket, disconnectWebSocket
-  };
-});
-```
-
-### 路由守卫系统
-
-```javascript
-// router/index.js
-router.beforeEach((to, from, next) => {
-  const tokenStore = useTokenStore();
-  
-  if (to.meta.requiresToken && !tokenStore.hasTokens) {
-    next('/tokens'); // 重定向到Token管理页
-  } else {
-    next();
-  }
-});
-```
-
-### 组件通信模式
-
-```javascript
-// 父子组件通信
-// Parent.vue
-<TokenManager 
-  :tokens="tokens" 
-  @token-selected="handleTokenSelect"
-  @token-updated="handleTokenUpdate" />
-
-// 兄弟组件通信（通过Store）
-const tokenStore = useTokenStore();
-const gameData = computed(() => tokenStore.gameData);
-```
-
----
-
-## 🔐 安全特性
-
-### 数据安全
-- **本地存储**：所有敏感数据仅存储在浏览器本地
-- **Token掩码**：界面显示时自动掩码处理（显示首尾4位）
-- **加密传输**：WebSocket消息使用多重加密协议
-- **会话隔离**：每个Tab页面独立的连接会话
-
-### 协议安全
-```javascript
-// 多重加密支持
-const encryptors = {
-  lx: lzCompressionWithMask,      // LZ4压缩+头部掩码
-  x: randomHeaderWithXOR,         // 随机头部+XOR加密
-  xtm: xxteaEncryption           // XXTEA加密算法
-};
-
-// 自动加密检测和解密
-const autoDecrypt = (data) => {
-  if (isLXFormat(data)) return lx.decrypt(data);
-  if (isXFormat(data)) return x.decrypt(data);
-  if (isXTMFormat(data)) return xtm.decrypt(data);
-  return data;
-};
-```
-
----
-
-## 🚀 性能优化
-
-### 前端优化
-- **代码分割**：路由级别的懒加载
-- **Tree Shaking**：自动删除未使用代码
-- **资源压缩**：Gzip压缩和资源优化
-- **缓存策略**：智能缓存Token和游戏数据
-
-### WebSocket优化
-- **连接池**：复用WebSocket连接
-- **消息队列**：批量处理和发送优化
-- **心跳机制**：智能心跳保持连接活跃
-- **断线重连**：指数退避重连算法
-
-### 内存优化
-```javascript
-// 响应式数据优化
-const gameData = computed(() => {
-  return tokenStore.gameData || {};
-});
-
-// 组件卸载时清理
-onUnmounted(() => {
-  if (wsClient.value) {
-    wsClient.value.disconnect();
-  }
-});
-```
-
----
-
-## 🤝 贡献指南
-
-### 开发规范
-1. **代码风格**：使用ESLint + Prettier统一代码风格
-2. **组件命名**：使用PascalCase命名Vue组件
-3. **提交规范**：遵循Conventional Commits规范
-4. **文档注释**：关键功能使用JSDoc注释
-
-### 提交流程
 ```bash
-# 1. Fork项目并克隆到本地
-git clone https://github.com/your-username/xyzw-web-helper.git
-
-# 2. 创建功能分支
-git checkout -b feature/new-feature
-
-# 3. 提交更改
-git commit -m "feat: 添加新功能描述"
-
-# 4. 推送分支
-git push origin feature/new-feature
-
-# 5. 创建Pull Request
+sudo certbot renew --dry-run
 ```
 
-### Issue反馈
-- 🐛 **Bug报告**：描述问题复现步骤和环境信息
-- 💡 **功能建议**：详细说明需求场景和预期效果
-- 📖 **文档改进**：指出文档不准确或缺失的部分
-- ❓ **使用问题**：提供详细的使用场景和问题描述
+---
+
+## 17. 使用 Docker 部署
+
+### 17.1 当前仓库里的 Docker 资源说明
+
+当前仓库中已有：
+- `docker/dockerfile`
+- `docker/nginx.conf`
+- `docker/install.sh`
+- `docker/install.cmd`
+
+这套资源更偏向于：
+- **把前端静态构建产物打进 Nginx 镜像进行发布**
+
+也就是说，它更适合“纯前端静态部署”，**不是完整的前后端一体 Docker 编排方案**。
+
+### 17.2 仅部署前端静态页面
+
+先在本地或服务器构建前端：
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+然后把 `frontend/dist` 按你的镜像构建方式放入 Docker 构建上下文，再基于现有 `docker/dockerfile` 构建 Nginx 镜像。
+
+如果你要直接使用当前仓库里的文件，可以参考这种思路：
+
+```bash
+# 假设你把 frontend/dist 复制到 docker/dist
+cd docker
+docker build -t xyzw-frontend -f dockerfile .
+docker run -d -p 8080:80 --name xyzw-frontend xyzw-frontend
+```
+
+> 注意：当前 `docker/dockerfile` 默认 `COPY ./dist /app/web`，因此它要求 Docker 构建上下文里存在 `dist` 目录。
+
+### 17.3 推荐的完整 Docker Compose 方案（前后端一起）
+
+如果你希望以后更标准地用 Docker 部署，推荐增加一个 `docker-compose.yml`，思路如下：
+
+```yaml
+version: '3.9'
+services:
+  backend:
+    image: node:20-alpine
+    working_dir: /app/backend
+    volumes:
+      - ./:/app
+    command: sh -c "npm install && npm run start"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3001
+      JWT_SECRET: your_jwt_secret
+      ENCRYPTION_KEY: your_encrypt_key
+      DB_PATH: ./data/xyzw.db
+    ports:
+      - "3001:3001"
+
+  frontend-build:
+    image: node:20-alpine
+    working_dir: /app/frontend
+    volumes:
+      - ./:/app
+    command: sh -c "npm install && npm run build"
+
+  nginx:
+    image: nginx:stable-alpine
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./deploy/nginx.full.conf:/etc/nginx/conf.d/default.conf:ro
+```
+
+> 说明：上面只是一个部署思路示例。若使用 Docker Compose 做完整前后端部署，建议单独准备一个支持 `/api` 反向代理的 Nginx 配置，而不是直接复用当前仓库里偏静态站点用途的 `docker/nginx.conf`。
+
+不过对于当前项目，**Docker Compose 更适合作为后续优化项**。如果你现在只是想快速上线，一般优先推荐：
+- **PM2 + Nginx**
+
+因为更直接，也更容易排查问题。
+
+### 17.4 更实用的 Docker 思路
+
+对于当前仓库，Docker 更推荐拆成两步：
+1. 构建前端静态资源
+2. 用 Node 容器跑后端，或继续用 PM2 跑后端
+
+如果你后面需要，我可以继续帮你补：
+- `docker-compose.yml`
+- 后端专用 `Dockerfile`
+- 前端专用 `Dockerfile`
+- 适配当前项目的 `nginx.conf`
 
 ---
 
-## 📋 更新日志
+## 18. 生产环境部署建议
 
-### v2.1.1 (Current - 2025.10.01)
-- 🎮 **月度任务系统**
-  - 新增月度任务进度跟踪面板，实时显示钓鱼和竞技场进度
-  - 实现钓鱼自动补齐功能，智能优先使用免费次数
-  - 添加竞技场自动补齐，采用贪心策略估算战斗次数
-  - 支持一键完成月度任务和进度刷新功能
+### 推荐组合
+对于当前项目，优先推荐：
+- **Node.js + PM2 + Nginx**
 
-- 👥 **角色身份卡系统**
-  - 新增角色身份卡组件，展示角色头像、等级、战力等详细信息
-  - 实现完整的战力段位系统，包含10个段位等级和专属样式
-  - 添加角色头像默认图片库和智能加载失败处理
-  - 优化队伍状态展示，增加炫光边框动画效果
+这是因为：
+- 配置简单
+- 适合单机部署
+- 后端日志、重启、守护都比较方便
+- 后续接 HTTPS 也方便
 
-- ⚡ **性能与稳定性优化**
-  - 优化WebSocket连接状态监听和错误处理机制
-  - 移除大量调试日志输出，减少控制台噪音
-  - 改进Token过期检测和用户友好提示机制
-  - 调整游戏命令结构，统一消息响应格式
+### 推荐目录结构
+服务器上可以这样放：
 
-- 🎨 **界面体验提升**
-  - 完善战力数值格式化显示（支持亿、万单位转换）
-  - 实现段位进度条计算和可视化展示
-  - 添加深色主题下的身份卡样式完美适配
-  - 优化移动端显示效果，调整元素尺寸和间距
+```text
+/var/www/xyzw/
+├─ backend/
+├─ frontend/
+├─ docker/
+└─ README.md
+```
 
-- 🐛 **Bug修复**
-  - 修复若干已知问题和代码错误
-  - 清理临时文档文件，保持项目结构整洁
-  - 优化角色信息获取逻辑，提升数据获取可靠性
+### 推荐上线流程
 
-### v2.1.0 (2025.09.04)
-- 🌓 **全新主题系统**
-  - 全局深浅主题切换功能，支持系统主题自动检测
-  - 优雅的圆形切换按钮，与界面设计完美融合
-  - 实时热切换，无需刷新页面即可切换主题
-  - 完整支持Naive UI组件的深色主题
-  - 智能记忆用户主题偏好设置
+```bash
+git pull
+cd backend && npm install
+cd ../frontend && npm install && npm run build
+cd ../backend && pm2 restart xyzw-backend
+```
 
-- ⚡ **响应式体验优化**
-  - 修复主题切换按钮状态不实时更新的问题
-  - 解决弹框等Portal组件字体颜色不热切换的问题
-  - 基于MutationObserver的DOM变化监听
-  - 事件驱动的主题状态同步机制
+### 更新代码后的最小操作
+如果只是前端改动：
 
-- 🎨 **界面统一性提升**
-  - 统一TokenImport和Dashboard页面的主题切换组件
-  - 使用太阳/月亮图标直观表示主题状态
-  - 添加按钮hover动画效果
-  - 完善的CSS深色主题适配
+```bash
+cd frontend
+npm install
+npm run build
+```
 
-- 🔧 **技术架构改进**
-  - 重构useTheme composable，使用响应式ref替代computed
-  - 双重DOM监听确保状态同步（html + body）
-  - 支持data-theme属性和class类名双重主题检测
-  - 优化的事件系统和状态管理
+如果后端也改了：
 
-### v2.0.0 (Legacy)
-- 🎉 重构Token管理系统，支持多角色管理
-- 🔧 升级WebSocket客户端，支持更多游戏协议
-- 🎨 全新UI设计，基于Naive UI组件库
-- ⚡ 优化BON协议处理，提升消息编解码性能
-- 🛡️ 增强安全性，支持多种加密方式
-- 🧪 添加完整的测试和调试工具
-
-### v1.x.x (Legacy)
-- 基础Token管理功能
-- 简单WebSocket连接
-- 基础游戏功能支持
+```bash
+cd backend
+npm install
+pm2 restart xyzw-backend
+```
 
 ---
 
-## 🗓️ 版本更新计划
+## 19. 后续可继续优化的方向
 
-### v2.2.0 (计划中 - Q1 2026)
-- 🎯 **自动化增强**
-  - [ ] 智能任务调度系统
-  - [ ] 增加账号批量管理界面
-  - [ ] 支持每日任务一键完成
-  - [ ] 支持定时任务抢购符咒
-
-- 🔧 **功能扩展**  
-  - [ ] 支持自定义脚本生成
-  - [ ] 添加数据统计面板
-  - [ ] 增强游戏状态监控
-  - [ ] 支持多服务器管理
-
-### v2.1.0 已完成功能 ✅
-- 🎨 **用户界面**
-  - [x] 全局深浅主题切换系统
-  - [x] 实时热切换，无需刷新页面
-  - [x] 优雅的圆形主题切换按钮
-  - [x] 完整的Naive UI深色主题支持
-  - [x] 界面已有bug修复
-
-- 🔧 **技术优化**
-  - [x] 支持远端获取Token（URL接口方式）
-  - [x] 支持Token自动刷新功能
-  - [x] 响应式状态管理优化
-  - [x] DOM变化监听和事件驱动更新
-
-## 📄 许可证
-
-本项目基于 [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License](LICENSE) 许可证。
-
-**⚠️ 重要声明：**
-- ✅ **允许**：个人学习、研究、修改和分享
-- ❌ **禁止**：商业用途、销售、商业化运营
-- 📝 **要求**：署名、相同许可证分享、标注修改
-
-详细许可条款请查看 [LICENSE](LICENSE) 文件。
+- 在根目录增加统一的 `package.json`，做 workspace 管理
+- 增加 `.env.example`
+- 增加 Linux 启动脚本（如 `start-dev.sh`）
+- 增加 GitHub Actions 自动构建/发布流程
+- 为当前项目补齐完整 `docker-compose.yml`
+- 补充生产环境变量模板与部署脚本
 
 ---
 
-## 📞 联系方式
+## 20. License
 
-- **项目主页**：[GitHub Repository](https://github.com/w1249178256/xyzw_web_helper)
-- **问题反馈**：[GitHub Issues](https://github.com/w1249178256/xyzw_web_helper/issues)
-- **联系邮箱**：[发邮件给我](mailto:stevefeng59@gmail.com)
-- **TG群组**：[欢迎加入](https://t.me/+SEDhXWN_OpNiMGI1)
+当前仓库许可信息请以根目录 `LICENSE` 为准。
 
----
-
-## 👏 赞赏
-<img src="https://github.com/w1249178256/xyzw_web_helper/blob/main/public/IMG_8007.JPG" width="200" height="200">
-
-<div align="center">
-
-**⭐ 如果这个项目对你有帮助，请给它一个星标！**
-
-Made with ❤️ by FF Team
-
-</div>
