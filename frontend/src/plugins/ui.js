@@ -5,6 +5,7 @@ import {
   ElCard,
   ElCol,
   ElContainer,
+  ElDatePicker,
   ElDialog,
   ElDrawer,
   ElDropdown,
@@ -38,6 +39,7 @@ import 'element-plus/es/components/button/style/css';
 import 'element-plus/es/components/card/style/css';
 import 'element-plus/es/components/col/style/css';
 import 'element-plus/es/components/container/style/css';
+import 'element-plus/es/components/date-picker/style/css';
 import 'element-plus/es/components/dialog/style/css';
 import 'element-plus/es/components/drawer/style/css';
 import 'element-plus/es/components/dropdown/style/css';
@@ -65,6 +67,7 @@ const elementComponents = {
   ElCard,
   ElCol,
   ElContainer,
+  ElDatePicker,
   ElDialog,
   ElDrawer,
   ElDropdown,
