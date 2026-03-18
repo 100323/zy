@@ -33,10 +33,10 @@ instance.interceptors.response.use(
           localStorage.removeItem('token');
           localStorage.removeItem('user');
           router.push('/login');
-          ElMessage.error('登录已过期，请重新登录');
+          ElMessage.error(response.data?.error || '登录已过期，请重新登录');
           break;
         case 403:
-          ElMessage.error('没有权限执行此操作');
+          ElMessage.error(response.data?.error || '没有权限执行此操作');
           break;
         case 404:
           ElMessage.error('请求的资源不存在');

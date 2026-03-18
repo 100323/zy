@@ -4,6 +4,7 @@ import { hashPassword, verifyPassword } from '../utils/crypto.js';
 import jwt from '../utils/jwt.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { validateInviteCode, useInviteCode } from './inviteCodes.js';
+import { buildUserAccessSummary, getUserAvailabilityStatus } from '../utils/userAccess.js';
 
 const router = Router();
 
@@ -58,8 +59,8 @@ router.post('/register', async (req, res) => {
     const { hash, salt } = hashPassword(password);
 
     const result = run(
-      'INSERT INTO users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)',
-      [username, hash, salt, 'user']
+      'INSERT INTO users (username, password_hash, salt, role, max_game_accounts) VALUES (?, ?, ?, ?, ?)',
+      [username, hash, salt, 'user', 5]
     );
 
     useInviteCode(inviteCode);
@@ -118,6 +119,14 @@ router.post('/login', async (req, res) => {
       });
     }
 
+    const accessStatus = getUserAvailabilityStatus(user);
+    if (!accessStatus.allowed) {
+      return res.status(403).json({
+        success: false,
+        error: accessStatus.reason
+      });
+    }
+
     run(
       'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?',
       [user.id]
@@ -152,7 +161,10 @@ router.post('/login', async (req, res) => {
 
 router.get('/me', authMiddleware, (req, res) => {
   try {
-    const user = get('SELECT id, username, role, created_at, last_login FROM users WHERE id = ?', [req.user.userId]);
+    const user = get(
+      'SELECT id, username, role, created_at, last_login, is_enabled, access_start_at, access_end_at, max_game_accounts FROM users WHERE id = ?',
+      [req.user.userId]
+    );
     
     if (!user) {
       return res.status(404).json({
@@ -163,7 +175,10 @@ router.get('/me', authMiddleware, (req, res) => {
 
     res.json({
       success: true,
-      data: user
+      data: {
+        ...user,
+        ...buildUserAccessSummary(user)
+      }
     });
   } catch (error) {
     console.error('获取用户信息错误:', error);

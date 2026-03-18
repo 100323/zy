@@ -1,4 +1,6 @@
 import jwt from '../utils/jwt.js';
+import { get } from '../database/index.js';
+import { getUserAvailabilityStatus } from '../utils/userAccess.js';
 
 export function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -20,7 +22,34 @@ export function authMiddleware(req, res, next) {
     });
   }
 
-  req.user = result.payload;
+  const user = get(
+    'SELECT id, username, role, is_enabled, access_start_at, access_end_at FROM users WHERE id = ?',
+    [result.payload.userId]
+  );
+
+  if (!user) {
+    return res.status(401).json({
+      success: false,
+      error: '用户不存在'
+    });
+  }
+
+  const status = getUserAvailabilityStatus(user);
+  if (!status.allowed) {
+    return res.status(401).json({
+      success: false,
+      error: status.reason
+    });
+  }
+
+  req.user = {
+    userId: user.id,
+    username: user.username,
+    role: user.role,
+    is_enabled: user.is_enabled,
+    access_start_at: user.access_start_at,
+    access_end_at: user.access_end_at
+  };
   next();
 }
 

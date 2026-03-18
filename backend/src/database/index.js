@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   salt TEXT NOT NULL,
   role TEXT DEFAULT 'user',
+  max_game_accounts INTEGER DEFAULT 5,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   last_login DATETIME
 );
@@ -163,8 +164,10 @@ export async function initDatabase() {
   }
 
   db = new SQL.Database(dbData);
+  db.run('PRAGMA foreign_keys = ON;');
   
   db.run(schema);
+  ensureUsersSchema(db);
   ensureGameAccountSchema(db);
   normalizeGameAccounts(db);
   cleanupLogTables(db);
@@ -173,6 +176,35 @@ export async function initDatabase() {
 
   console.log('✅ 数据库初始化完成:', dbPath);
   return db;
+}
+
+function ensureUsersSchema(db) {
+  try {
+    const result = db.exec("PRAGMA table_info('users')");
+    const columns = new Set(
+      result?.[0]?.values?.map((row) => String(row?.[1] || '').toLowerCase()) || []
+    );
+
+    if (!columns.has('is_enabled')) {
+      db.run('ALTER TABLE users ADD COLUMN is_enabled INTEGER DEFAULT 1');
+      db.run('UPDATE users SET is_enabled = 1 WHERE is_enabled IS NULL');
+    }
+
+    if (!columns.has('access_start_at')) {
+      db.run('ALTER TABLE users ADD COLUMN access_start_at DATETIME');
+    }
+
+    if (!columns.has('access_end_at')) {
+      db.run('ALTER TABLE users ADD COLUMN access_end_at DATETIME');
+    }
+
+    if (!columns.has('max_game_accounts')) {
+      db.run('ALTER TABLE users ADD COLUMN max_game_accounts INTEGER DEFAULT 5');
+      db.run('UPDATE users SET max_game_accounts = 5 WHERE max_game_accounts IS NULL');
+    }
+  } catch (error) {
+    console.warn('⚠️ 检查 users 表结构失败:', error?.message || error);
+  }
 }
 
 function ensureGameAccountSchema(db) {

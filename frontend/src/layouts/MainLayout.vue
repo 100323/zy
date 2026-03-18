@@ -112,6 +112,7 @@ import {
   Setting,
   Ticket,
   Trophy,
+  User,
   UserFilled
 } from '@element-plus/icons-vue';
 import { useAuthStore } from '@stores/auth';
@@ -123,11 +124,7 @@ const mobileMenuOpen = ref(false);
 
 const activeMenu = computed(() => route.path);
 const pageTitle = computed(() => route.meta?.title || 'XYZW 管理后台');
-const isAdmin = computed(() => {
-  console.log('authStore.user:', authStore.user);
-  console.log('role:', authStore.user?.role);
-  return authStore.user?.role === 'admin';
-});
+const isAdmin = computed(() => authStore.user?.role === 'admin');
 const menuItems = [
   { index: '/', label: '首页', icon: HomeFilled },
   { index: '/tokens', label: '账号管理', icon: Key },
@@ -135,6 +132,7 @@ const menuItems = [
   { index: '/daily-tasks', label: '日常任务', icon: Clock },
   { index: '/tasks', label: '任务配置', icon: Setting },
   { index: '/logs', label: '执行日志', icon: Document },
+  { index: '/user-management', label: '用户管理', icon: User, adminOnly: true },
   { index: '/invite-codes', label: '邀请码管理', icon: Ticket, adminOnly: true }
 ];
 const visibleMenuItems = computed(() => menuItems.filter((item) => !item.adminOnly || isAdmin.value));

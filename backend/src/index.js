@@ -12,6 +12,7 @@ import statsRoutes from './routes/stats.js';
 import batchSchedulerRoutes from './routes/batchScheduler.js';
 import batchSettingsRoutes from './routes/batchSettings.js';
 import inviteCodeRoutes from './routes/inviteCodes.js';
+import adminUsersRoutes from './routes/adminUsers.js';
 import { initScheduler, executeTask } from './scheduler/index.js';
 import { initBatchScheduler } from './batchScheduler/index.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -45,6 +46,7 @@ app.use('/api/stats', statsRoutes);
 app.use('/api/batch-scheduler', batchSchedulerRoutes);
 app.use('/api/batch-settings', batchSettingsRoutes);
 app.use('/api/invite-codes', inviteCodeRoutes);
+app.use('/api/admin/users', adminUsersRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({

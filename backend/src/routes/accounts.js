@@ -151,6 +151,25 @@ router.post('/', (req, res) => {
       });
     }
 
+    const user = get(
+      'SELECT id, max_game_accounts FROM users WHERE id = ?',
+      [req.user.userId]
+    );
+
+    const accountCountRow = get(
+      'SELECT COUNT(*) AS total FROM game_accounts WHERE user_id = ?',
+      [req.user.userId]
+    );
+    const currentCount = Number(accountCountRow?.total || 0);
+    const maxGameAccounts = user?.max_game_accounts == null ? null : Number(user.max_game_accounts);
+
+    if (maxGameAccounts && currentCount >= maxGameAccounts) {
+      return res.status(400).json({
+        success: false,
+        error: `当前账号最多只能添加 ${maxGameAccounts} 个游戏账号，已达到上限`
+      });
+    }
+
     const rawTokenText = String(token).trim();
     const { encrypted, iv } = encrypt(rawTokenText);
 

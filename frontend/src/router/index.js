@@ -55,6 +55,12 @@ const routes = [
         name: 'InviteCodes',
         component: () => import('@views/InviteCodes.vue'),
         meta: { title: '邀请码管理', requiresAdmin: true }
+      },
+      {
+        path: 'user-management',
+        name: 'UserManagement',
+        component: () => import('@views/UserManagement.vue'),
+        meta: { title: '用户管理', requiresAdmin: true }
       }
     ]
   }
@@ -67,9 +73,12 @@ const router = createRouter({
 
 router.beforeEach((to, from, next) => {
   const authStore = useAuthStore();
+  authStore.checkAuth();
   
   if (!to.meta.public && !authStore.isAuthenticated) {
     next({ name: 'Login', query: { redirect: to.fullPath } });
+  } else if (to.meta.requiresAdmin && authStore.user?.role !== 'admin') {
+    next({ name: 'Home' });
   } else if (to.name === 'Login' && authStore.isAuthenticated) {
     next({ name: 'Home' });
   } else {
