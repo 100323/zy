@@ -17,6 +17,7 @@ import {
   registerAccountClient,
   unregisterAccountClient,
 } from '../utils/accountTaskCoordinator.js';
+import { getUserAvailabilityStatus } from '../utils/userAccess.js';
 
 const scheduledBatchJobs = new Map();
 const activeConnections = new Map();
@@ -182,7 +183,13 @@ export async function initBatchScheduler() {
   console.log('🕐 初始化批量任务调度器...');
   
   const tasks = all(
-    `SELECT * FROM batch_scheduled_tasks WHERE enabled = 1`
+    `SELECT bst.*
+     FROM batch_scheduled_tasks bst
+     JOIN users u ON bst.user_id = u.id
+     WHERE bst.enabled = 1
+       AND COALESCE(u.is_enabled, 1) = 1
+       AND (u.access_start_at IS NULL OR datetime(u.access_start_at) <= datetime('now'))
+       AND (u.access_end_at IS NULL OR datetime(u.access_end_at) >= datetime('now'))`
   );
   
   console.log(`📋 找到 ${tasks.length} 个启用的批量任务`);
@@ -266,9 +273,22 @@ export function unscheduleBatchTask(taskId) {
 
 export async function checkAndRunDueBatchTasks() {
   const tasks = all(
-    `SELECT * FROM batch_scheduled_tasks WHERE enabled = 1`
+    `SELECT bst.*
+     FROM batch_scheduled_tasks bst
+     JOIN users u ON bst.user_id = u.id
+     WHERE bst.enabled = 1
+       AND COALESCE(u.is_enabled, 1) = 1
+       AND (u.access_start_at IS NULL OR datetime(u.access_start_at) <= datetime('now'))
+       AND (u.access_end_at IS NULL OR datetime(u.access_end_at) >= datetime('now'))`
   );
   
+  const enabledTaskIds = new Set(tasks.map((task) => Number(task.id)));
+  for (const existingTaskId of scheduledBatchJobs.keys()) {
+    if (!enabledTaskIds.has(Number(existingTaskId))) {
+      unscheduleBatchTask(existingTaskId);
+    }
+  }
+
   for (const task of tasks) {
     if (!scheduledBatchJobs.has(Number(task.id))) {
       scheduleBatchTask(task);
@@ -289,6 +309,16 @@ export async function executeBatchTask(task) {
   addBatchTaskLogEntry(task.id, null, 'BATCH_START', 'info', `开始执行批量任务: ${task.name}`);
 
   try {
+    const user = get(
+      'SELECT id, username, role, is_enabled, access_start_at, access_end_at FROM users WHERE id = ?',
+      [task.user_id]
+    );
+    const userStatus = getUserAvailabilityStatus(user);
+    if (!userStatus.allowed) {
+      addBatchTaskLogEntry(task.id, null, 'BATCH_ERROR', 'error', `所属用户不可用，批量任务已停止：${userStatus.reason}`);
+      return;
+    }
+
     const accountIds = JSON.parse(task.selected_account_ids || '[]');
     const taskTypes = JSON.parse(task.selected_task_types || '[]');
 

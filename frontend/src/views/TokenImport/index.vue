@@ -4,16 +4,30 @@
       <div class="page-header">
         <div class="header-left">
           <h2>账号管理</h2>
-          <p>管理您的所有游戏账号</p>
+          <p>
+            管理您的所有游戏账号
+            <template v-if="accountLimitText">
+              （{{ accountLimitText }}）
+            </template>
+          </p>
         </div>
         <div class="header-right">
-          <el-button type="primary" @click="showImportForm = true">
+          <el-button type="primary" :disabled="accountLimitReached" @click="openImportForm">
             <el-icon><Plus /></el-icon>
             添加账号
           </el-button>
         </div>
       </div>
     </el-card>
+
+    <el-alert
+      v-if="accountLimitReached"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="limit-alert"
+      :title="`你当前最多可添加 ${maxGameAccounts} 个游戏账号，已达到上限。若需继续添加，请在用户管理中调整上限。`"
+    />
 
     <a-modal
       class="token-import-modal"
@@ -202,11 +216,12 @@ import { useTokenStore, selectedTokenId } from "@/stores/tokenStore";
 import { Add } from "@vicons/ionicons5";
 import { Plus, MoreFilled, Edit, CopyDocument, Delete, Refresh as RefreshIcon } from '@element-plus/icons-vue';
 import { NIcon, useDialog, useMessage } from "naive-ui";
-import { defineAsyncComponent, h, onMounted, reactive, ref } from "vue";
+import { computed, defineAsyncComponent, h, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { transformToken } from "@/utils/token";
 import useIndexedDB from "@/hooks/useIndexedDB";
 import api from "@utils/api";
+import { useAuthStore } from "@stores/auth";
 
 const ManualTokenForm = defineAsyncComponent(() => import("./manual.vue"));
 const UrlTokenForm = defineAsyncComponent(() => import("./url.vue"));
@@ -229,6 +244,7 @@ const router = useRouter();
 const message = useMessage();
 const dialog = useDialog();
 const tokenStore = useTokenStore();
+const authStore = useAuthStore();
 
 const showImportForm = ref(false);
 const showEditModal = ref(false);
@@ -248,6 +264,32 @@ const editForm = reactive({
 const editRules = {
   name: [{ required: true, message: "请输入账号名称", trigger: "blur" }],
   token: [{ required: true, message: "请输入Token字符串", trigger: "blur" }],
+};
+
+const maxGameAccounts = computed(() => {
+  const raw = authStore.user?.max_game_accounts;
+  if (raw === null || raw === undefined || raw === '') return null;
+  const normalized = Number(raw);
+  return Number.isFinite(normalized) && normalized > 0 ? normalized : null;
+});
+
+const accountLimitReached = computed(() => {
+  return maxGameAccounts.value !== null && tokenStore.gameTokens.length >= maxGameAccounts.value;
+});
+
+const accountLimitText = computed(() => {
+  if (maxGameAccounts.value === null) {
+    return `已添加 ${tokenStore.gameTokens.length} 个账号，不限数量`;
+  }
+  return `已添加 ${tokenStore.gameTokens.length}/${maxGameAccounts.value} 个账号`;
+});
+
+const openImportForm = () => {
+  if (accountLimitReached.value) {
+    message.warning(`当前账号最多只能添加 ${maxGameAccounts.value} 个游戏账号，已达到上限`);
+    return;
+  }
+  showImportForm.value = true;
 };
 
 const maskToken = (token) => {
@@ -602,6 +644,9 @@ const deleteToken = (token) => {
 };
 
 onMounted(async () => {
+  if (authStore.isAuthenticated && authStore.user && authStore.user.max_game_accounts === undefined) {
+    await authStore.fetchUser();
+  }
   await tokenStore.initTokenStore();
 
   if (!tokenStore.hasTokens && !props.token && !props.api) {
@@ -615,6 +660,10 @@ onMounted(async () => {
   padding: var(--spacing-md);
 
   .header-card {
+    margin-bottom: 16px;
+  }
+
+  .limit-alert {
     margin-bottom: 16px;
   }
 

@@ -216,6 +216,22 @@ const resetForm = () => {
   formRef.value?.clearValidate?.();
 };
 
+const toPickerValue = (value) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const pad = (num) => String(num).padStart(2, '0');
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate())
+  ].join('-') + ' ' + [
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds())
+  ].join(':');
+};
+
 const formatTime = (value) => {
   if (!value) return '';
   const text = String(value);
@@ -271,8 +287,8 @@ const openEditDialog = (row) => {
     is_enabled: !!row.is_enabled,
     limit_enabled: !!row.max_game_accounts,
     max_game_accounts: row.max_game_accounts || null,
-    access_start_at: row.access_start_at || null,
-    access_end_at: row.access_end_at || null
+    access_start_at: toPickerValue(row.access_start_at),
+    access_end_at: toPickerValue(row.access_end_at)
   });
   dialogVisible.value = true;
 };
@@ -316,6 +332,9 @@ const submitForm = async () => {
       ElMessage.success(isEditing.value ? '用户更新成功' : '用户创建成功');
       dialogVisible.value = false;
       resetForm();
+      if (isCurrentUser({ id: editingId.value })) {
+        await authStore.fetchUser();
+      }
       await fetchUsers();
     }
   } catch (error) {

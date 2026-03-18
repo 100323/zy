@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import { getEnabledTasks, updateTaskRunTime, markTaskRunTime, addTaskLog } from '../routes/tasks.js';
+import { get } from '../database/index.js';
 import { decrypt } from '../utils/crypto.js';
 import GameClient from '../utils/gameClient.js';
 import config from '../config/index.js';
@@ -17,6 +18,7 @@ import {
   registerAccountClient,
   unregisterAccountClient,
 } from '../utils/accountTaskCoordinator.js';
+import { getUserAvailabilityStatus } from '../utils/userAccess.js';
 
 const activeConnections = new Map();
 const scheduledJobs = new Map();
@@ -278,6 +280,15 @@ export async function executeTask(task) {
     console.log(`🚀 开始执行任务: ${accountName} - ${task_type}`);
 
     try {
+      const user = get(
+        'SELECT id, username, role, is_enabled, access_start_at, access_end_at FROM users WHERE id = ?',
+        [task.user_id]
+      );
+      const userStatus = getUserAvailabilityStatus(user);
+      if (!userStatus.allowed) {
+        throw new Error(`所属用户不可用，任务已停止：${userStatus.reason}`);
+      }
+
       const rawToken = token || decrypt(token_encrypted, token_iv);
       const tokenMeta = parseTokenPayload(rawToken);
       const tokenCandidates = tokenMeta.candidates?.length

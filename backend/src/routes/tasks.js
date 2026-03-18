@@ -320,7 +320,12 @@ export function getEnabledTasks() {
     `SELECT tc.*, ga.user_id, ga.name as account_name, ga.token_encrypted, ga.token_iv, ga.server, ga.ws_url
      FROM task_configs tc
      JOIN game_accounts ga ON tc.account_id = ga.id
-     WHERE tc.enabled = 1 AND ga.status = 'active'`
+     JOIN users u ON ga.user_id = u.id
+     WHERE tc.enabled = 1
+       AND ga.status = 'active'
+       AND COALESCE(u.is_enabled, 1) = 1
+       AND (u.access_start_at IS NULL OR datetime(u.access_start_at) <= datetime('now'))
+       AND (u.access_end_at IS NULL OR datetime(u.access_end_at) >= datetime('now'))`
   );
 }
 

@@ -17,6 +17,8 @@ export const useAuthStore = defineStore('auth', () => {
       
       localStorage.setItem('token', res.data.token);
       localStorage.setItem('user', JSON.stringify(res.data.user));
+
+      await fetchUser();
     }
     
     return res;
@@ -31,6 +33,8 @@ export const useAuthStore = defineStore('auth', () => {
       
       localStorage.setItem('token', res.data.token);
       localStorage.setItem('user', JSON.stringify(res.data.user));
+
+      await fetchUser();
     }
     
     return res;

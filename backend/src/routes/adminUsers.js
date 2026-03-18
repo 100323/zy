@@ -8,6 +8,19 @@ const router = Router();
 
 router.use(authMiddleware, adminOnly);
 
+async function refreshSchedulers() {
+  try {
+    const [{ checkAndRunDueTasks }, { checkAndRunDueBatchTasks }] = await Promise.all([
+      import('../scheduler/index.js'),
+      import('../batchScheduler/index.js')
+    ]);
+    await checkAndRunDueTasks();
+    await checkAndRunDueBatchTasks();
+  } catch (error) {
+    console.warn('⚠️ 刷新调度器失败:', error?.message || error);
+  }
+}
+
 function normalizeRole(role) {
   return role === 'admin' ? 'admin' : 'user';
 }
@@ -170,7 +183,7 @@ router.post('/', (req, res) => {
   }
 });
 
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const user = get('SELECT * FROM users WHERE id = ?', [id]);
@@ -284,6 +297,7 @@ router.put('/:id', (req, res) => {
 
     updateValues.push(id);
     run(`UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`, updateValues);
+    await refreshSchedulers();
 
     const updatedUser = get(
       `SELECT id, username, role, created_at, last_login, is_enabled, access_start_at, access_end_at, max_game_accounts
@@ -309,7 +323,7 @@ router.put('/:id', (req, res) => {
   }
 });
 
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const user = get('SELECT id, username, role FROM users WHERE id = ?', [id]);
@@ -329,6 +343,7 @@ router.delete('/:id', (req, res) => {
     }
 
     run('DELETE FROM users WHERE id = ?', [id]);
+    await refreshSchedulers();
 
     res.json({
       success: true,

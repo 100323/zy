@@ -12,6 +12,7 @@ import { transformToken } from "@/utils/token";
 import { emitPlus } from "./events/index.js";
 import router from "@/router";
 import api from "@utils/api";
+import { useAuthStore } from "./auth";
 
 const indexedDb = useIndexedDB();
 const {
@@ -631,6 +632,16 @@ export const useTokenStore = defineStore("tokens", () => {
   };
 
   const addToken = (tokenData: TokenData) => {
+    const authStore = useAuthStore();
+    const rawLimit = authStore.user?.max_game_accounts;
+    const maxGameAccounts = rawLimit === null || rawLimit === undefined || rawLimit === ''
+      ? null
+      : Number(rawLimit);
+
+    if (maxGameAccounts !== null && Number.isFinite(maxGameAccounts) && gameTokens.value.length >= maxGameAccounts) {
+      throw new Error(`当前账号最多只能添加 ${maxGameAccounts} 个游戏账号，已达到上限`);
+    }
+
     let id = tokenData.id || `token_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const {
       id: _ignoredId,
