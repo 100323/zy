@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { run, get, all, cleanupTaskLogs } from '../database/index.js';
+import { run, get, all, cleanupTaskLogs, getDatabase, saveDatabase } from '../database/index.js';
 import { authMiddleware } from '../middleware/auth.js';
 
 const router = Router();
@@ -44,6 +44,133 @@ export const TASK_TYPES = {
   GENIE_SWEEP: { name: '灯神扫荡', cron: '1 0 * * *', group: 'resource' },
 };
 
+export const DEFAULT_TASK_CONFIG_SEEDS = {
+  HANGUP_CLAIM: { enabled: true, config: { count: 5 } },
+  HANGUP_ADD_TIME: { enabled: true, config: {} },
+  BOTTLE_RESET: { enabled: true, config: {} },
+  BOTTLE_CLAIM: { enabled: true, config: {} },
+  LEGION_SIGN: { enabled: true, config: {} },
+  FRIEND_GOLD: { enabled: true, config: { count: 3 } },
+  MAIL_CLAIM: { enabled: true, config: {} },
+  STUDY: { enabled: true, config: {} },
+  ARENA: { enabled: true, config: { battleCount: 3 } },
+  CAR_SEND: {
+    enabled: true,
+    config: {
+      goldThreshold: 0,
+      recruitThreshold: 0,
+      jadeThreshold: 0,
+      ticketThreshold: 0,
+      matchAll: false,
+    }
+  },
+  CAR_CLAIM: { enabled: true, config: {} },
+  BUY_GOLD: { enabled: true, config: { buyNum: 3 } },
+  RECRUIT: {
+    enabled: true,
+    config: {
+      useFreeRecruit: true,
+      usePaidRecruit: true,
+      freeRecruitCount: 1,
+      paidRecruitCount: 1,
+    }
+  },
+  FISHING: { enabled: true, config: { type: 1, count: 3 } },
+  BOX_OPEN: { enabled: true, config: { boxType: 2001, number: 10 } },
+  BLACK_MARKET: { enabled: true, config: {} },
+  TREASURE_CLAIM: { enabled: true, config: {} },
+  LEGACY_CLAIM: { enabled: true, config: { interval: 360 } },
+  TOWER: { enabled: true, config: { maxFloors: 10 } },
+  WEIRD_TOWER: { enabled: true, config: { weirdTowerMaxFloors: 10 } },
+  WEIRD_TOWER_FREE_ITEM: { enabled: true, config: {} },
+  WEIRD_TOWER_USE_ITEM: { enabled: true, config: {} },
+  WEIRD_TOWER_MERGE_ITEM: { enabled: true, config: {} },
+  LEGION_STORE_FRAGMENT: { enabled: true, config: {} },
+  LEGION_BOSS: { enabled: true, config: { bossFormation: 2, bossTimes: 4 } },
+  DAILY_BOSS: { enabled: true, config: {} },
+  WELFARE_CLAIM: { enabled: true, config: {} },
+  DAILY_TASK_CLAIM: { enabled: true, config: {} },
+  DREAM: { enabled: true, config: {} },
+  SKIN_CHALLENGE: { enabled: true, config: {} },
+  DREAM_PURCHASE: { enabled: true, config: { purchaseList: ['1-3', '1-5', '2-6', '2-7', '3-1', '3-2', '3-7'] } },
+  GENIE_SWEEP: { enabled: true, config: {} },
+};
+
+function insertDefaultTaskConfig(targetDb, accountId, taskType, seed = {}) {
+  const taskMeta = TASK_TYPES[taskType];
+  if (!taskMeta) {
+    return false;
+  }
+
+  targetDb.run(
+    `INSERT INTO task_configs (account_id, task_type, enabled, cron_expression, config_json)
+     VALUES (?, ?, ?, ?, ?)`,
+    [
+      accountId,
+      taskType,
+      seed.enabled ? 1 : 0,
+      seed.cronExpression || taskMeta.cron,
+      JSON.stringify(seed.config || {}),
+    ]
+  );
+  return true;
+}
+
+export function ensureDefaultTaskConfigsForAccount(accountId, targetDb = getDatabase()) {
+  const normalizedAccountId = Number(accountId);
+  if (!Number.isInteger(normalizedAccountId) || normalizedAccountId <= 0) {
+    return { created: 0, insertedTaskTypes: [] };
+  }
+
+  const existingTaskTypes = new Set(
+    all('SELECT task_type FROM task_configs WHERE account_id = ?', [normalizedAccountId])
+      .map((row) => String(row.task_type || ''))
+      .filter(Boolean)
+  );
+
+  const insertedTaskTypes = [];
+  for (const [taskType, seed] of Object.entries(DEFAULT_TASK_CONFIG_SEEDS)) {
+    if (existingTaskTypes.has(taskType)) {
+      continue;
+    }
+    if (insertDefaultTaskConfig(targetDb, normalizedAccountId, taskType, seed)) {
+      insertedTaskTypes.push(taskType);
+    }
+  }
+
+  if (insertedTaskTypes.length > 0) {
+    saveDatabase();
+  }
+
+  return {
+    created: insertedTaskTypes.length,
+    insertedTaskTypes,
+  };
+}
+
+export function ensureDefaultTaskConfigsForAllAccounts(targetDb = getDatabase()) {
+  const accounts = all('SELECT id FROM game_accounts');
+  let created = 0;
+  const details = [];
+
+  accounts.forEach((account) => {
+    const result = ensureDefaultTaskConfigsForAccount(account.id, targetDb);
+    if (result.created > 0) {
+      created += result.created;
+      details.push({
+        accountId: Number(account.id),
+        insertedTaskTypes: result.insertedTaskTypes,
+      });
+    }
+  });
+
+  return {
+    accountCount: accounts.length,
+    created,
+    details,
+  };
+}
+
 router.get('/types', (req, res) => {
   const types = Object.entries(TASK_TYPES).map(([key, value]) => ({
     type: key,
@@ -73,6 +200,8 @@ router.get('/account/:accountId', (req, res) => {
         error: '账号不存在'
       });
     }
+
+    ensureDefaultTaskConfigsForAccount(accountId);
 
     const configs = all(
       `SELECT id, account_id, task_type, enabled, cron_expression, config_json, last_run_at, next_run_at, created_at, updated_at 
@@ -317,7 +446,8 @@ router.get('/logs/:accountId', (req, res) => {
 
 export function getEnabledTasks() {
   return all(
-    `SELECT tc.*, ga.user_id, ga.name as account_name, ga.token_encrypted, ga.token_iv, ga.server, ga.ws_url
+    `SELECT tc.*, ga.user_id, ga.name as account_name, ga.token_encrypted, ga.token_iv, ga.server, ga.ws_url,
+            ga.import_method AS account_import_method, ga.updated_at AS account_updated_at
      FROM task_configs tc
      JOIN game_accounts ga ON tc.account_id = ga.id
      JOIN users u ON ga.user_id = u.id

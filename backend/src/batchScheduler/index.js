@@ -18,6 +18,11 @@ import {
   unregisterAccountClient,
 } from '../utils/accountTaskCoordinator.js';
 import { getUserAvailabilityStatus } from '../utils/userAccess.js';
+import {
+  buildWsLogContext,
+  normalizeDisconnectInfo,
+  normalizeErrorMessage,
+} from '../utils/wsDiagnostics.js';
 
 const scheduledBatchJobs = new Map();
 const activeConnections = new Map();
@@ -323,7 +328,9 @@ export async function executeBatchTask(task) {
     const taskTypes = JSON.parse(task.selected_task_types || '[]');
 
     const accounts = all(
-      `SELECT id, name, token_encrypted, token_iv, ws_url, server FROM game_accounts WHERE id IN (${accountIds.map(() => '?').join(',')}) AND status = 'active'`,
+      `SELECT id, name, token_encrypted, token_iv, ws_url, server, import_method, updated_at
+       FROM game_accounts
+       WHERE id IN (${accountIds.map(() => '?').join(',')}) AND status = 'active'`,
       accountIds
     );
 
@@ -369,7 +376,16 @@ export async function executeBatchTask(task) {
 
         if (dailyRewardDirty) {
           try {
-            const rewardResult = await executePostTaskRewardsForAccount(account, tokenCandidates, tokenMeta.roleId, accountWsUrl);
+            const rewardResult = await executePostTaskRewardsForAccount(
+              account,
+              tokenCandidates,
+              tokenMeta.roleId,
+              accountWsUrl,
+              {
+                importMethod: account.import_method || null,
+                updatedAt: account.updated_at || null,
+              }
+            );
             addBatchTaskLogEntry(
               task.id,
               account.id,
@@ -415,7 +431,10 @@ export async function executeBatchTask(task) {
 }
 
 async function executeTaskForAccount(batchTaskId, account, taskType, tokenCandidates, roleId = null, wsUrl = '') {
-  let client = await ensureBatchClient(account, tokenCandidates, roleId, wsUrl);
+  let client = await ensureBatchClient(account, tokenCandidates, roleId, wsUrl, {
+    importMethod: account.import_method || null,
+    updatedAt: account.updated_at || null,
+  });
   let result;
   try {
     result = await runTaskByType(client, taskType, {});
@@ -424,7 +443,10 @@ async function executeTaskForAccount(batchTaskId, account, taskType, tokenCandid
       console.warn(`🔁 批量任务检测到连接已断开，重连后重试: ${account.name} - ${taskType}`);
       activeConnections.delete(account.id);
       client.disconnect();
-      client = await ensureBatchClient(account, tokenCandidates, roleId, wsUrl);
+      client = await ensureBatchClient(account, tokenCandidates, roleId, wsUrl, {
+        importMethod: account.import_method || null,
+        updatedAt: account.updated_at || null,
+      });
       result = await runTaskByType(client, taskType, {});
     } else {
       throw error;
@@ -437,44 +459,77 @@ async function executeTaskForAccount(batchTaskId, account, taskType, tokenCandid
   return result;
 }
 
-async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl = '') {
+async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl = '', extraContext = {}) {
   let client = activeConnections.get(account.id);
 
   if (client && client.connected) {
+    console.log('♻️ 复用批量任务已有WebSocket连接', {
+      accountId: account.id,
+      accountName: account.name,
+      roleId: roleId ?? null,
+      importMethod: extraContext.importMethod || null,
+      updatedAt: extraContext.updatedAt || null,
+    });
     return client;
   }
 
   let connected = false;
   let lastError = null;
-      for (const token of tokenCandidates) {
-        const resolvedWsUrl = resolveWsUrl(wsUrl, token);
-        const candidateClient = new GameClient(token, { roleId, wsUrl: resolvedWsUrl });
-        candidateClient.accountId = account.id;
-        candidateClient.accountName = account.name;
+  for (const [candidateIndex, token] of tokenCandidates.entries()) {
+    const resolvedWsUrl = resolveWsUrl(wsUrl, token);
+    const candidateClient = new GameClient(token, { roleId, wsUrl: resolvedWsUrl });
+    candidateClient.accountId = account.id;
+    candidateClient.accountName = account.name;
+    let disconnectInfo = null;
+    let wsErrorMessage = null;
+    const logContext = buildWsLogContext({
+      accountId: account.id,
+      accountName: account.name,
+      roleId,
+      importMethod: extraContext.importMethod || null,
+      updatedAt: extraContext.updatedAt || null,
+      candidateIndex: candidateIndex + 1,
+      candidateCount: tokenCandidates.length,
+      token,
+      wsUrl: resolvedWsUrl,
+    });
 
-        candidateClient.onDisconnect = (code, reason) => {
-          console.log(`🔌 连接断开: ${account.name} (${code}) ${reason}`);
+    candidateClient.onDisconnect = (code, reason) => {
+      disconnectInfo = { code, reason };
+      console.warn('🔌 批量任务连接断开', {
+        ...logContext,
+        disconnect: normalizeDisconnectInfo(disconnectInfo),
+      });
       activeConnections.delete(account.id);
       unregisterAccountClient(account.id, candidateClient);
     };
 
     candidateClient.onError = (error) => {
-      console.error(`❌ 连接错误: ${account.name}:`, error.message);
+      wsErrorMessage = normalizeErrorMessage(error);
+      console.error('❌ 批量任务连接错误', {
+        ...logContext,
+        error: wsErrorMessage,
+      });
       activeConnections.delete(account.id);
       unregisterAccountClient(account.id, candidateClient);
     };
 
     try {
+      console.log('🔄 尝试建立批量任务WebSocket连接', logContext);
       await candidateClient.connect();
       if (!candidateClient.connected) {
         throw new Error('WebSocket未连接');
       }
       activeConnections.set(account.id, candidateClient);
       registerAccountClient(account.id, candidateClient);
+      console.log('✅ 批量任务WebSocket连接成功', logContext);
       try {
         candidateClient.sendDataBundleVer();
       } catch (error) {
-        console.warn(`⚠️ 初始化请求失败(可忽略): ${account.name}`, error.message);
+        console.warn('⚠️ 批量任务初始化请求失败(可忽略)', {
+          ...logContext,
+          error: normalizeErrorMessage(error),
+        });
       }
       try {
         await candidateClient.getRoleInfo(8000);
@@ -482,7 +537,10 @@ async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl 
         if (String(error?.message || '').includes('WebSocket未连接') || !candidateClient.connected) {
           throw error;
         }
-        console.warn(`⚠️ 角色信息预热失败(可忽略): ${account.name}`, error.message);
+        console.warn('⚠️ 批量任务角色信息预热失败(可忽略)', {
+          ...logContext,
+          error: normalizeErrorMessage(error),
+        });
       }
       if (!candidateClient.connected) {
         throw new Error('WebSocket未连接');
@@ -492,6 +550,12 @@ async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl 
       break;
     } catch (error) {
       lastError = error;
+      console.warn('⚠️ 批量任务候选Token连接失败', {
+        ...logContext,
+        error: normalizeErrorMessage(error),
+        disconnect: normalizeDisconnectInfo(disconnectInfo),
+        wsError: wsErrorMessage || null,
+      });
       candidateClient.disconnect();
       activeConnections.delete(account.id);
       unregisterAccountClient(account.id, candidateClient);
@@ -499,6 +563,14 @@ async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl 
   }
 
   if (!connected || !client) {
+    console.error('⚠️ 批量任务WebSocket连接失败', {
+      accountId: account.id,
+      accountName: account.name,
+      roleId: roleId ?? null,
+      importMethod: extraContext.importMethod || null,
+      updatedAt: extraContext.updatedAt || null,
+      error: normalizeErrorMessage(lastError),
+    });
     throw new Error(lastError?.message || 'WebSocket连接失败');
   }
 
@@ -527,8 +599,8 @@ async function claimDailyPointRewardsByTask(client, taskType, taskConfig = {}) {
   }
 }
 
-async function executePostTaskRewardsForAccount(account, tokenCandidates, roleId = null, wsUrl = '') {
-  let client = await ensureBatchClient(account, tokenCandidates, roleId, wsUrl);
+async function executePostTaskRewardsForAccount(account, tokenCandidates, roleId = null, wsUrl = '', extraContext = {}) {
+  let client = await ensureBatchClient(account, tokenCandidates, roleId, wsUrl, extraContext);
 
   try {
     return await executeDailyTaskClaim(client, {});
@@ -539,7 +611,7 @@ async function executePostTaskRewardsForAccount(account, tokenCandidates, roleId
     console.warn(`🔁 批量任务收尾补领检测到连接已断开，重连后重试: ${account.name}`);
     activeConnections.delete(account.id);
     client.disconnect();
-    client = await ensureBatchClient(account, tokenCandidates, roleId, wsUrl);
+    client = await ensureBatchClient(account, tokenCandidates, roleId, wsUrl, extraContext);
     return await executeDailyTaskClaim(client, {});
   }
 }

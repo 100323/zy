@@ -5,6 +5,8 @@ import { authMiddleware } from '../middleware/auth.js';
 import { parseTokenPayload } from '../utils/token.js';
 import GameClient from '../utils/gameClient.js';
 import config from '../config/index.js';
+import { ensureDefaultTaskConfigsForAccount } from './tasks.js';
+import { buildWsLogContext, normalizeDisconnectInfo, normalizeErrorMessage } from '../utils/wsDiagnostics.js';
 
 const router = Router();
 
@@ -121,7 +123,7 @@ router.get('/:id', (req, res) => {
   }
 });
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   try {
     normalizeGameAccounts();
 
@@ -195,11 +197,26 @@ router.post('/', (req, res) => {
       throw error;
     }
 
+    const accountId = Number(result.lastInsertRowid);
+    const seedResult = ensureDefaultTaskConfigsForAccount(accountId);
+    if (seedResult.created > 0) {
+      console.log('🧩 新账号已自动初始化默认定时任务配置', {
+        accountId,
+        accountName: normalizedName,
+        userId: req.user.userId,
+        importMethod: importMethod || 'manual',
+        createdTaskConfigCount: seedResult.created,
+        taskTypes: seedResult.insertedTaskTypes,
+      });
+      const { checkAndRunDueTasks } = await import('../scheduler/index.js');
+      await checkAndRunDueTasks();
+    }
+
     res.status(201).json({
       success: true,
       message: '账号添加成功',
       data: {
-        id: result.lastInsertRowid,
+        id: accountId,
         name: normalizedName,
         server,
         remark,
@@ -373,7 +390,7 @@ router.get('/:id/token', (req, res) => {
 router.post('/:id/test-connection', async (req, res) => {
   try {
     const account = get(
-      'SELECT id, name, token_encrypted, token_iv, ws_url, server FROM game_accounts WHERE id = ? AND user_id = ?',
+      'SELECT id, name, token_encrypted, token_iv, ws_url, server, import_method, updated_at FROM game_accounts WHERE id = ? AND user_id = ?',
       [req.params.id, req.user.userId]
     );
 
@@ -416,6 +433,13 @@ router.post('/:id/test-connection', async (req, res) => {
         `UPDATE game_accounts SET ${updateFields.join(', ')} WHERE id = ? AND user_id = ?`,
         updateValues
       );
+      console.log('💾 后端连接测试已持久化最新账号连接参数', {
+        accountId: Number(account.id),
+        accountName: account.name,
+        importMethod: account.import_method || 'manual',
+        persistedToken: !!requestTokenText,
+        persistedWsUrl: !!requestWsUrlText,
+      });
     }
 
     const requestedTimeout = Number(req.body?.timeout);
@@ -435,17 +459,37 @@ router.post('/:id/test-connection', async (req, res) => {
       const client = new GameClient(candidateToken, { roleId: tokenMeta.roleId, wsUrl: resolvedWsUrl });
       let disconnectInfo = null;
       let wsErrorMessage = null;
+      const logContext = buildWsLogContext({
+        accountId: Number(account.id),
+        accountName: account.name,
+        roleId: tokenMeta.roleId,
+        importMethod: account.import_method || 'manual',
+        updatedAt: account.updated_at || null,
+        candidateIndex: index + 1,
+        candidateCount: tokenCandidates.length,
+        token: candidateToken,
+        wsUrl: resolvedWsUrl,
+      });
       client.onDisconnect = (code, reason) => {
         disconnectInfo = {
           code: Number(code) || 0,
           reason: String(reason || '')
         };
+        console.warn('🔌 后端连接测试连接断开', {
+          ...logContext,
+          disconnect: normalizeDisconnectInfo(disconnectInfo),
+        });
       };
       client.onError = (error) => {
         wsErrorMessage = error?.message || String(error || '');
+        console.error('❌ 后端连接测试连接报错', {
+          ...logContext,
+          error: normalizeErrorMessage(error),
+        });
       };
 
       try {
+        console.log('🧪 开始后端连接测试', logContext);
         await client.connect();
         if (!client.connected) {
           throw new Error('WebSocket未连接');
@@ -453,11 +497,18 @@ router.post('/:id/test-connection', async (req, res) => {
 
         const connectedMs = Date.now() - startedAt;
         lastConnectedMs = connectedMs;
+        console.log('✅ 后端连接测试已建立WebSocket', {
+          ...logContext,
+          connectedMs,
+        });
 
         try {
           client.sendDataBundleVer();
         } catch (error) {
-          console.warn(`⚠️ 连接测试初始化请求失败(可忽略): ${account.name}`, error.message);
+          console.warn('⚠️ 后端连接测试初始化请求失败(可忽略)', {
+            ...logContext,
+            error: normalizeErrorMessage(error),
+          });
         }
 
         if (!client.connected) {
@@ -487,6 +538,12 @@ router.post('/:id/test-connection', async (req, res) => {
           if (String(error?.message || '').includes('WebSocket未连接') || !client.connected) {
             throw error;
           }
+          console.warn('⚠️ 后端连接测试角色信息预热失败', {
+            ...logContext,
+            connectedMs,
+            elapsedMs: Date.now() - startedAt,
+            error: normalizeErrorMessage(error),
+          });
           const elapsedMs = Date.now() - startedAt;
           return res.json({
             success: true,
@@ -508,6 +565,12 @@ router.post('/:id/test-connection', async (req, res) => {
         lastError = error?.message || '连接测试失败';
         lastDisconnectInfo = disconnectInfo;
         lastWsError = wsErrorMessage;
+        console.warn('⚠️ 后端连接测试候选失败', {
+          ...logContext,
+          error: normalizeErrorMessage(error),
+          disconnect: normalizeDisconnectInfo(disconnectInfo),
+          wsError: wsErrorMessage || null,
+        });
       } finally {
         client.disconnect();
       }

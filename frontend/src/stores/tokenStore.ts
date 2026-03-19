@@ -152,6 +152,60 @@ export const useTokenStore = defineStore("tokens", () => {
   const getErrorMessage = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
 
+  const getTokenFingerprint = (token: unknown) => {
+    const raw = String(token ?? "").trim();
+    if (!raw) {
+      return {
+        length: 0,
+        preview: "empty",
+        hash: "empty",
+      };
+    }
+
+    let hash = 0;
+    for (let i = 0; i < raw.length; i += 1) {
+      hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+    }
+
+    return {
+      length: raw.length,
+      preview: raw.length > 24 ? `${raw.slice(0, 12)}...${raw.slice(-8)}` : raw,
+      hash: (hash >>> 0).toString(16),
+    };
+  };
+
+  const summarizeWsUrlForLogs = (wsUrl?: string | null) => {
+    const raw = String(wsUrl ?? "").trim();
+    if (!raw) {
+      return {
+        provided: false,
+        mode: "default",
+      };
+    }
+
+    try {
+      const url = new URL(raw, window.location.origin);
+      return {
+        provided: true,
+        origin: url.origin,
+        path: url.pathname,
+        hasTokenParam: url.searchParams.has("p"),
+        queryKeys: [...url.searchParams.keys()].filter((key) => key !== "p"),
+      };
+    } catch {
+      const [pathPart, queryPart = ""] = raw.split("?");
+      return {
+        provided: true,
+        raw: pathPart,
+        hasTokenParam: queryPart.includes("p="),
+        queryKeys: queryPart
+          .split("&")
+          .map((item) => item.split("=")[0]?.trim())
+          .filter((key) => key && key !== "p"),
+      };
+    }
+  };
+
   const sleep = (ms: number) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -806,7 +860,14 @@ export const useTokenStore = defineStore("tokens", () => {
     const gameToken = gameTokens.value.find((t) => t.id === tokenId);
     if (!gameToken) return false;
 
-    wsLogger.info(`尝试自动刷新Token [${tokenId}]`);
+    wsLogger.info(`尝试自动刷新Token [${tokenId}]`, {
+      name: gameToken.name,
+      importMethod: gameToken.importMethod || "manual",
+      sourceUrl: gameToken.sourceUrl || null,
+      token: getTokenFingerprint(gameToken.token),
+      ws: summarizeWsUrlForLogs(gameToken.wsUrl || null),
+      forceReconnect,
+    });
     let refreshSuccess = false;
 
     try {
@@ -817,7 +878,10 @@ export const useTokenStore = defineStore("tokens", () => {
           const data = await response.json();
           if (data.token) {
             updateToken(tokenId, { ...gameToken, token: data.token });
-            wsLogger.info(`从URL获取token成功: ${gameToken.name}`);
+            wsLogger.info(`从URL获取token成功: ${gameToken.name}`, {
+              tokenId,
+              token: getTokenFingerprint(data.token),
+            });
             refreshSuccess = true;
           }
         }
@@ -846,6 +910,11 @@ export const useTokenStore = defineStore("tokens", () => {
               await deleteArrayBuffer(matchedKey);
             }
           }
+          wsLogger.info(`从本地BIN刷新Token成功 [${tokenId}]`, {
+            matchedKey,
+            triedKeys,
+            token: getTokenFingerprint(token),
+          });
           refreshSuccess = true;
         } else {
           wsLogger.error(`Token刷新失败: 未找到BIN数据 [${tokenId}]`, { triedKeys });
@@ -856,17 +925,25 @@ export const useTokenStore = defineStore("tokens", () => {
     }
 
     if (refreshSuccess) {
-      wsLogger.info(`Token刷新成功 [${tokenId}]`);
+      const updatedToken = gameTokens.value.find((t) => t.id === tokenId);
+      wsLogger.info(`Token刷新成功 [${tokenId}]`, {
+        name: updatedToken?.name || gameToken.name,
+        token: getTokenFingerprint(updatedToken?.token || gameToken.token),
+        ws: summarizeWsUrlForLogs(updatedToken?.wsUrl || gameToken.wsUrl || null),
+      });
 
       const accountId = String(tokenId || "");
       if (/^\d+$/.test(accountId)) {
         try {
-          const updatedToken = gameTokens.value.find((t) => t.id === tokenId);
           await api.put(`/accounts/${accountId}`, {
             token: updatedToken?.token || gameToken.token,
             server: updatedToken?.server || gameToken.server || "",
             wsUrl: updatedToken?.wsUrl || gameToken.wsUrl || "",
             remark: updatedToken?.remark || gameToken.remark || "",
+          });
+          wsLogger.info(`刷新后的Token已同步到后端 [${tokenId}]`, {
+            accountId,
+            token: getTokenFingerprint(updatedToken?.token || gameToken.token),
           });
         } catch (error) {
           tokenLogger.warn(`同步刷新后的Token失败 [${tokenId}]`, error);
@@ -1230,7 +1307,10 @@ export const useTokenStore = defineStore("tokens", () => {
     base64Token: string,
     customWsUrl: string | null = null,
   ) => {
-    wsLogger.info(`开始创建连接: ${tokenId}`);
+    wsLogger.info(`开始创建连接: ${tokenId}`, {
+      token: getTokenFingerprint(base64Token),
+      ws: summarizeWsUrlForLogs(customWsUrl),
+    });
 
     // 1. 获取连接锁，防止竞态条件
     const lockAcquired = await acquireConnectionLock(tokenId, "connect");
@@ -1274,9 +1354,10 @@ export const useTokenStore = defineStore("tokens", () => {
 
       const wsUrl = customWsUrl || baseWsUrl;
 
-      wsLogger.debug(
-        `Token: ${actualToken.substring(0, 10)}...${actualToken.slice(-4)}`,
-      );
+      wsLogger.debug(`连接使用Token指纹 [${tokenId}]`, {
+        token: getTokenFingerprint(actualToken),
+        ws: summarizeWsUrlForLogs(wsUrl),
+      });
 
       // 7. 创建新的WebSocket客户端（增强版）
       const wsClient = new XyzwWebSocketClient({
@@ -1354,6 +1435,11 @@ export const useTokenStore = defineStore("tokens", () => {
       wsClient.onDisconnect = async (event: CloseEvent) => {
         const reason = event.code === 1006 ? "异常断开" : event.reason || "";
         wsLogger.wsDisconnect(tokenId, reason);
+        wsLogger.warn(`WebSocket断开详情 [${tokenId}]`, {
+          code: event.code,
+          reason,
+          ws: summarizeWsUrlForLogs(wsUrl),
+        });
         if (wsConnections.value[tokenId]) {
           const conn = wsConnections.value[tokenId];
           conn.status = "disconnected";
@@ -1372,6 +1458,11 @@ export const useTokenStore = defineStore("tokens", () => {
 
       wsClient.onError = (error: unknown) => {
         wsLogger.wsError(tokenId, error);
+        wsLogger.error(`WebSocket错误详情 [${tokenId}]`, {
+          error: getErrorMessage(error),
+          ws: summarizeWsUrlForLogs(wsUrl),
+          token: getTokenFingerprint(actualToken),
+        });
         if (wsConnections.value[tokenId]) {
           wsConnections.value[tokenId].status = "error";
           wsConnections.value[tokenId].lastError = {

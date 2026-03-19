@@ -1,5 +1,11 @@
 import cron from 'node-cron';
-import { getEnabledTasks, updateTaskRunTime, markTaskRunTime, addTaskLog } from '../routes/tasks.js';
+import {
+  getEnabledTasks,
+  updateTaskRunTime,
+  markTaskRunTime,
+  addTaskLog,
+  ensureDefaultTaskConfigsForAllAccounts,
+} from '../routes/tasks.js';
 import { get } from '../database/index.js';
 import { decrypt } from '../utils/crypto.js';
 import GameClient from '../utils/gameClient.js';
@@ -19,6 +25,11 @@ import {
   unregisterAccountClient,
 } from '../utils/accountTaskCoordinator.js';
 import { getUserAvailabilityStatus } from '../utils/userAccess.js';
+import {
+  buildWsLogContext,
+  normalizeDisconnectInfo,
+  normalizeErrorMessage,
+} from '../utils/wsDiagnostics.js';
 
 const activeConnections = new Map();
 const scheduledJobs = new Map();
@@ -186,6 +197,15 @@ async function recruitWithReconnect(client, recruitType, mode, maxReconnectRetri
 
 export async function initScheduler() {
   console.log('🕐 初始化定时任务调度器...');
+
+  const seedResult = ensureDefaultTaskConfigsForAllAccounts();
+  if (seedResult.created > 0) {
+    console.log('🧩 已为现有账号补齐默认定时任务配置', {
+      accountCount: seedResult.accountCount,
+      createdTaskConfigCount: seedResult.created,
+      accounts: seedResult.details,
+    });
+  }
   
   const tasks = getEnabledTasks();
   console.log(`📋 找到 ${tasks.length} 个启用的任务`);
@@ -269,7 +289,18 @@ export async function checkAndRunDueTasks() {
 
 export async function executeTask(task) {
   const accountId = task.account_id ?? task.id;
-  const { task_type, name, token_encrypted, token_iv, config_json, token, account_name: accountNameFromTask, ws_url } = task;
+  const {
+    task_type,
+    name,
+    token_encrypted,
+    token_iv,
+    config_json,
+    token,
+    account_name: accountNameFromTask,
+    ws_url,
+    account_import_method,
+    account_updated_at,
+  } = task;
   const accountName = accountNameFromTask || name || `账号${accountId ?? '未知'}`;
 
   if (!accountId) {
@@ -299,7 +330,10 @@ export async function executeTask(task) {
       }
       const taskWsUrl = ws_url || tokenMeta.wsUrl || '';
       const taskConfig = config_json ? JSON.parse(config_json) : {};
-      let client = await ensureConnectedClient(accountId, accountName, tokenCandidates, tokenMeta.roleId, taskWsUrl);
+      let client = await ensureConnectedClient(accountId, accountName, tokenCandidates, tokenMeta.roleId, taskWsUrl, {
+        importMethod: account_import_method || null,
+        updatedAt: account_updated_at || null,
+      });
       let result;
       try {
         result = await runTaskByType(client, task_type, taskConfig);
@@ -307,7 +341,10 @@ export async function executeTask(task) {
         if (isRetryableWsError(error)) {
           console.warn(`🔁 检测到连接已断开，重连后重试: ${accountName} - ${task_type}`);
           forceDisconnectClient(accountId);
-          client = await ensureConnectedClient(accountId, accountName, tokenCandidates, tokenMeta.roleId, taskWsUrl);
+          client = await ensureConnectedClient(accountId, accountName, tokenCandidates, tokenMeta.roleId, taskWsUrl, {
+            importMethod: account_import_method || null,
+            updatedAt: account_updated_at || null,
+          });
           result = await runTaskByType(client, task_type, taskConfig);
         } else {
           throw error;
@@ -321,6 +358,8 @@ export async function executeTask(task) {
         tokenCandidates,
         roleId: tokenMeta.roleId,
         wsUrl: taskWsUrl,
+        importMethod: account_import_method || null,
+        updatedAt: account_updated_at || null,
       });
 
       addTaskLog(accountId, task_type, 'success', result.message || '执行成功', JSON.stringify(result.data || {}));
@@ -380,7 +419,9 @@ function ensureDailyRewardFlushEntry(accountId) {
       accountName: `账号${accountId}`,
       tokenCandidates: [],
       roleId: null,
-      wsUrl: ''
+      wsUrl: '',
+      importMethod: null,
+      updatedAt: null,
     });
   }
 
@@ -404,6 +445,8 @@ function updateDailyRewardFlushAfterTask(accountId, context = {}) {
   entry.tokenCandidates = Array.isArray(context.tokenCandidates) ? [...context.tokenCandidates] : entry.tokenCandidates;
   entry.roleId = context.roleId ?? entry.roleId;
   entry.wsUrl = typeof context.wsUrl === 'string' ? context.wsUrl : entry.wsUrl;
+  entry.importMethod = context.importMethod ?? entry.importMethod;
+  entry.updatedAt = context.updatedAt ?? entry.updatedAt;
   entry.retryCount = 0;
 
   if (context.taskType === 'DAILY_TASK_CLAIM') {
@@ -460,7 +503,9 @@ async function flushDailyRewardClaim(accountId, reason = 'debounced') {
     accountName: entry.accountName,
     tokenCandidates: Array.isArray(entry.tokenCandidates) ? [...entry.tokenCandidates] : [],
     roleId: entry.roleId,
-    wsUrl: entry.wsUrl || ''
+    wsUrl: entry.wsUrl || '',
+    importMethod: entry.importMethod || null,
+    updatedAt: entry.updatedAt || null,
   };
 
   entry.flushingPromise = runAccountTaskExclusive(accountId, async () => {
@@ -478,7 +523,11 @@ async function flushDailyRewardClaim(accountId, reason = 'debounced') {
         flushContext.accountName,
         flushContext.tokenCandidates,
         flushContext.roleId,
-        flushContext.wsUrl
+        flushContext.wsUrl,
+        {
+          importMethod: flushContext.importMethod,
+          updatedAt: flushContext.updatedAt,
+        }
       );
       let result;
       try {
@@ -492,7 +541,11 @@ async function flushDailyRewardClaim(accountId, reason = 'debounced') {
             flushContext.accountName,
             flushContext.tokenCandidates,
             flushContext.roleId,
-            flushContext.wsUrl
+            flushContext.wsUrl,
+            {
+              importMethod: flushContext.importMethod,
+              updatedAt: flushContext.updatedAt,
+            }
           );
           result = await executeDailyTaskClaim(client, {});
         } else {
@@ -563,6 +616,11 @@ function getDateKey() {
 function forceDisconnectClient(accountId) {
   const client = activeConnections.get(accountId);
   if (!client) return;
+  console.warn('🧹 强制断开旧WebSocket连接', {
+    accountId,
+    accountName: client.accountName || null,
+    connected: !!client.connected,
+  });
   try {
     client.disconnect();
   } catch (error) {
@@ -573,9 +631,16 @@ function forceDisconnectClient(accountId) {
   }
 }
 
-async function ensureConnectedClient(accountId, accountName, tokenCandidates, roleId = null, wsUrl = '') {
+async function ensureConnectedClient(accountId, accountName, tokenCandidates, roleId = null, wsUrl = '', extraContext = {}) {
   const existing = activeConnections.get(accountId);
   if (existing && existing.connected) {
+    console.log('♻️ 复用已有WebSocket连接', {
+      accountId,
+      accountName,
+      roleId: roleId ?? null,
+      importMethod: extraContext.importMethod || null,
+      updatedAt: extraContext.updatedAt || null,
+    });
     return existing;
   }
 
@@ -588,35 +653,63 @@ async function ensureConnectedClient(accountId, accountName, tokenCandidates, ro
     let lastError = null;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      for (const token of tokenCandidates) {
+      for (const [candidateIndex, token] of tokenCandidates.entries()) {
         const resolvedWsUrl = resolveWsUrl(wsUrl, token);
         const client = new GameClient(token, { roleId, wsUrl: resolvedWsUrl });
         client.accountId = accountId;
         client.accountName = accountName;
+        let disconnectInfo = null;
+        let wsErrorMessage = null;
+        const logContext = buildWsLogContext({
+          accountId,
+          accountName,
+          roleId,
+          importMethod: extraContext.importMethod || null,
+          updatedAt: extraContext.updatedAt || null,
+          attempt,
+          maxRetries,
+          candidateIndex: candidateIndex + 1,
+          candidateCount: tokenCandidates.length,
+          token,
+          wsUrl: resolvedWsUrl,
+        });
 
         client.onDisconnect = (code, reason) => {
-          console.log(`🔌 连接断开: ${accountName} (${code}) ${reason}`);
+          disconnectInfo = { code, reason };
+          console.warn('🔌 定时任务连接断开', {
+            ...logContext,
+            disconnect: normalizeDisconnectInfo(disconnectInfo),
+          });
           activeConnections.delete(accountId);
           unregisterAccountClient(accountId, client);
         };
 
         client.onError = (error) => {
-          console.error(`❌ 连接错误: ${accountName}:`, error.message);
+          wsErrorMessage = normalizeErrorMessage(error);
+          console.error('❌ 定时任务连接错误', {
+            ...logContext,
+            error: wsErrorMessage,
+          });
           activeConnections.delete(accountId);
           unregisterAccountClient(accountId, client);
         };
 
         try {
+          console.log('🔄 尝试建立定时任务WebSocket连接', logContext);
           await client.connect();
           if (!client.connected) {
             throw new Error('WebSocket未连接');
           }
           activeConnections.set(accountId, client);
           registerAccountClient(accountId, client);
+          console.log('✅ 定时任务WebSocket连接成功', logContext);
           try {
             client.sendDataBundleVer();
           } catch (error) {
-            console.warn(`⚠️ 初始化请求失败(可忽略): ${accountName}`, error.message);
+            console.warn('⚠️ 定时任务连接初始化请求失败(可忽略)', {
+              ...logContext,
+              error: normalizeErrorMessage(error),
+            });
           }
           // 给握手后续消息一点缓冲时间，减少“刚连上就发命令”失败
           await new Promise((resolve) => setTimeout(resolve, 300));
@@ -626,7 +719,10 @@ async function ensureConnectedClient(accountId, accountName, tokenCandidates, ro
             if (String(error?.message || '').includes('WebSocket未连接') || !client.connected) {
               throw error;
             }
-            console.warn(`⚠️ 角色信息预热失败(可忽略): ${accountName}`, error.message);
+            console.warn('⚠️ 定时任务角色信息预热失败(可忽略)', {
+              ...logContext,
+              error: normalizeErrorMessage(error),
+            });
           }
           if (!client.connected) {
             throw new Error('WebSocket未连接');
@@ -634,13 +730,27 @@ async function ensureConnectedClient(accountId, accountName, tokenCandidates, ro
           return client;
         } catch (error) {
           lastError = error;
-          console.warn(`⚠️ 连接候选token失败: ${accountName}`, error.message);
+          console.warn('⚠️ 定时任务候选Token连接失败', {
+            ...logContext,
+            error: normalizeErrorMessage(error),
+            disconnect: normalizeDisconnectInfo(disconnectInfo),
+            wsError: wsErrorMessage || null,
+          });
           client.disconnect();
           activeConnections.delete(accountId);
           unregisterAccountClient(accountId, client);
         }
       }
-      console.error(`⚠️ 连接失败(${attempt}/${maxRetries}): ${accountName}`, lastError?.message || '未知错误');
+      console.error('⚠️ 定时任务连接批次失败', {
+        accountId,
+        accountName,
+        roleId: roleId ?? null,
+        importMethod: extraContext.importMethod || null,
+        updatedAt: extraContext.updatedAt || null,
+        attempt,
+        maxRetries,
+        error: normalizeErrorMessage(lastError),
+      });
       if (attempt < maxRetries) {
         await new Promise((resolve) => setTimeout(resolve, 1200));
       }

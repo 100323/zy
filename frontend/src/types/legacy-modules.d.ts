@@ -38,3 +38,11 @@ declare module "@utils/api" {
   const api: any;
   export default api;
 }
+
+declare module "crypto-js" {
+  export const MD5: any;
+  export const lib: any;
+  export const enc: any;
+  const CryptoJS: any;
+  export default CryptoJS;
+}
