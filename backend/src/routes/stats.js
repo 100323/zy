@@ -182,7 +182,8 @@ router.get('/system-status', (req, res) => {
     for (const [accountId, client] of activeConnections) {
       connections.push({
         accountId,
-        status: client.connected ? 'connected' : 'disconnected'
+        status: client?.isSocketOpen?.() ? 'connected' : 'disconnected',
+        readyState: client?.getConnectionStateSummary?.()?.readyState || null,
       });
     }
 

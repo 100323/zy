@@ -7,6 +7,7 @@ import GameClient from '../utils/gameClient.js';
 import config from '../config/index.js';
 import { ensureDefaultTaskConfigsForAccount } from './tasks.js';
 import { buildWsLogContext, normalizeDisconnectInfo, normalizeErrorMessage } from '../utils/wsDiagnostics.js';
+import { warmupGameClient } from '../utils/wsWarmup.js';
 
 const router = Router();
 
@@ -452,13 +453,18 @@ router.post('/:id/test-connection', async (req, res) => {
     let lastConnectedMs = 0;
     let lastDisconnectInfo = null;
     let lastWsError = null;
+    let lastHandshake = null;
+    let lastWarmup = null;
 
     for (const [index, candidateToken] of tokenCandidates.entries()) {
+      lastWarmup = null;
+      lastHandshake = null;
       const wsUrl = requestWsUrlText || account.ws_url || tokenMeta.wsUrl || '';
       const resolvedWsUrl = resolveWsUrl(wsUrl, candidateToken);
       const client = new GameClient(candidateToken, { roleId: tokenMeta.roleId, wsUrl: resolvedWsUrl });
       let disconnectInfo = null;
       let wsErrorMessage = null;
+      let unexpectedResponse = null;
       const logContext = buildWsLogContext({
         accountId: Number(account.id),
         accountName: account.name,
@@ -470,7 +476,7 @@ router.post('/:id/test-connection', async (req, res) => {
         token: candidateToken,
         wsUrl: resolvedWsUrl,
       });
-      client.onDisconnect = (code, reason) => {
+      client.onDisconnect = (code, reason, meta) => {
         disconnectInfo = {
           code: Number(code) || 0,
           reason: String(reason || '')
@@ -478,98 +484,92 @@ router.post('/:id/test-connection', async (req, res) => {
         console.warn('🔌 后端连接测试连接断开', {
           ...logContext,
           disconnect: normalizeDisconnectInfo(disconnectInfo),
+          handshake: meta || client.lastConnectMeta || null,
         });
       };
-      client.onError = (error) => {
+      client.onError = (error, meta) => {
         wsErrorMessage = error?.message || String(error || '');
         console.error('❌ 后端连接测试连接报错', {
           ...logContext,
           error: normalizeErrorMessage(error),
+          handshake: meta || client.lastConnectMeta || null,
+        });
+      };
+      client.onUnexpectedResponse = (details, meta) => {
+        unexpectedResponse = details;
+        console.error('🚫 后端连接测试握手异常响应', {
+          ...logContext,
+          unexpectedResponse: details,
+          handshake: meta || client.lastConnectMeta || null,
         });
       };
 
       try {
         console.log('🧪 开始后端连接测试', logContext);
         await client.connect();
-        if (!client.connected) {
+        if (!client.isSocketOpen()) {
           throw new Error('WebSocket未连接');
         }
 
         const connectedMs = Date.now() - startedAt;
         lastConnectedMs = connectedMs;
+        lastHandshake = client.lastConnectMeta || null;
         console.log('✅ 后端连接测试已建立WebSocket', {
           ...logContext,
           connectedMs,
+          handshake: client.lastConnectMeta || null,
         });
 
-        try {
-          client.sendDataBundleVer();
-        } catch (error) {
-          console.warn('⚠️ 后端连接测试初始化请求失败(可忽略)', {
-            ...logContext,
-            error: normalizeErrorMessage(error),
-          });
-        }
+        const warmup = await warmupGameClient(client, {
+          roleInfoTimeout,
+          includeRoleId: false,
+        });
+        lastWarmup = warmup;
 
-        if (!client.connected) {
+        if (!client.isSocketOpen()) {
           throw new Error('WebSocket未连接');
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 120));
-        try {
-          const roleInfo = await client.getRoleInfo(roleInfoTimeout);
-          const elapsedMs = Date.now() - startedAt;
+        const elapsedMs = Date.now() - startedAt;
+        console.log('🔥 后端连接测试预热完成', {
+          ...logContext,
+          connectedMs,
+          elapsedMs,
+          handshake: client.lastConnectMeta || null,
+          warmup,
+        });
 
-          return res.json({
-            success: true,
-            message: '后端WebSocket连接测试成功',
-            data: {
-              accountId: account.id,
-              accountName: account.name,
-              server: account.server || '',
-              roleId: roleInfo?.role?.roleId || tokenMeta.roleId || null,
-              connectedMs,
-              elapsedMs,
-              roleName: roleInfo?.role?.name || account.name || null,
-              tokenCandidateIndex: index
-            }
-          });
-        } catch (error) {
-          if (String(error?.message || '').includes('WebSocket未连接') || !client.connected) {
-            throw error;
-          }
-          console.warn('⚠️ 后端连接测试角色信息预热失败', {
-            ...logContext,
+        return res.json({
+          success: true,
+          message: warmup.roleInfoError
+            ? '后端WebSocket连接测试成功(角色信息获取失败)'
+            : '后端WebSocket连接测试成功',
+          data: {
+            accountId: account.id,
+            accountName: account.name,
+            server: account.server || '',
+            roleId: warmup.roleInfo?.role?.roleId || tokenMeta.roleId || null,
             connectedMs,
-            elapsedMs: Date.now() - startedAt,
-            error: normalizeErrorMessage(error),
-          });
-          const elapsedMs = Date.now() - startedAt;
-          return res.json({
-            success: true,
-            message: '后端WebSocket连接测试成功(角色信息获取失败)',
-            data: {
-              accountId: account.id,
-              accountName: account.name,
-              server: account.server || '',
-              roleId: tokenMeta.roleId || null,
-              connectedMs,
-              elapsedMs,
-              roleName: account.name || null,
-              tokenCandidateIndex: index,
-              roleInfoError: error?.message || '角色信息获取失败'
-            }
-          });
-        }
+            elapsedMs,
+            roleName: warmup.roleInfo?.role?.name || account.name || null,
+            tokenCandidateIndex: index,
+            roleInfoError: warmup.roleInfoError,
+            battleVersion: warmup.battleVersion,
+          }
+        });
       } catch (error) {
         lastError = error?.message || '连接测试失败';
         lastDisconnectInfo = disconnectInfo;
         lastWsError = wsErrorMessage;
+        lastHandshake = client.lastConnectMeta || null;
         console.warn('⚠️ 后端连接测试候选失败', {
           ...logContext,
           error: normalizeErrorMessage(error),
           disconnect: normalizeDisconnectInfo(disconnectInfo),
           wsError: wsErrorMessage || null,
+          unexpectedResponse,
+          handshake: client.lastConnectMeta || null,
+          warmup: lastWarmup,
         });
       } finally {
         client.disconnect();
@@ -589,6 +589,8 @@ router.post('/:id/test-connection', async (req, res) => {
         elapsedMs,
         disconnect: lastDisconnectInfo,
         wsError: lastWsError,
+        handshake: lastHandshake,
+        warmup: lastWarmup,
         tokenCandidateCount: tokenCandidates.length
       }
     });

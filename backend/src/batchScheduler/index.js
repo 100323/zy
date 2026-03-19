@@ -23,6 +23,7 @@ import {
   normalizeDisconnectInfo,
   normalizeErrorMessage,
 } from '../utils/wsDiagnostics.js';
+import { warmupGameClient } from '../utils/wsWarmup.js';
 
 const scheduledBatchJobs = new Map();
 const activeConnections = new Map();
@@ -57,6 +58,22 @@ function isRetryableWsError(error) {
   return message.includes('WebSocket未连接') || message.includes('WebSocket连接已断开');
 }
 
+function discardInactiveClient(accountId, accountName, client, reason) {
+  console.warn('🧹 丢弃不可复用的批量任务连接', {
+    accountId,
+    accountName,
+    reason,
+    connection: client?.getConnectionStateSummary?.() || null,
+  });
+  activeConnections.delete(accountId);
+  unregisterAccountClient(accountId, client);
+  try {
+    client?.disconnect?.();
+  } catch {
+    // ignore
+  }
+}
+
 async function reconnectCurrentClient(client, label = '任务') {
   const accountId = Number(client?.accountId);
 
@@ -67,7 +84,7 @@ async function reconnectCurrentClient(client, label = '任务') {
   }
 
   await client.connect();
-  if (!client.connected) {
+  if (!client.isSocketOpen()) {
     throw new Error('WebSocket未连接');
   }
 
@@ -76,24 +93,18 @@ async function reconnectCurrentClient(client, label = '任务') {
     registerAccountClient(accountId, client);
   }
 
-  try {
-    client.sendDataBundleVer();
-  } catch (error) {
-    console.warn(`⚠️ ${label}重连后初始化请求失败(可忽略):`, error.message);
-  }
+  const warmup = await warmupGameClient(client, {
+    roleInfoTimeout: 8000,
+    includeRoleId: false,
+  });
+  console.log(`🔥 ${label}批量任务重连预热完成`, {
+    accountId: accountId || null,
+    accountName: client?.accountName || null,
+    handshake: client.lastConnectMeta || null,
+    warmup,
+  });
 
-  await new Promise((resolve) => setTimeout(resolve, 300));
-
-  try {
-    await client.getRoleInfo(8000);
-  } catch (error) {
-    if (isRetryableWsError(error) || !client.connected) {
-      throw error;
-    }
-    console.warn(`⚠️ ${label}重连后角色信息预热失败(可忽略):`, error.message);
-  }
-
-  if (!client.connected) {
+  if (!client.isSocketOpen()) {
     throw new Error('WebSocket未连接');
   }
 
@@ -462,15 +473,19 @@ async function executeTaskForAccount(batchTaskId, account, taskType, tokenCandid
 async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl = '', extraContext = {}) {
   let client = activeConnections.get(account.id);
 
-  if (client && client.connected) {
+  if (client?.isSocketOpen?.()) {
     console.log('♻️ 复用批量任务已有WebSocket连接', {
       accountId: account.id,
       accountName: account.name,
       roleId: roleId ?? null,
       importMethod: extraContext.importMethod || null,
       updatedAt: extraContext.updatedAt || null,
+      connection: client.getConnectionStateSummary?.() || null,
     });
     return client;
+  }
+  if (client) {
+    discardInactiveClient(account.id, account.name, client, 'readyState 非 OPEN 或 connected 标记失效');
   }
 
   let connected = false;
@@ -482,6 +497,7 @@ async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl 
     candidateClient.accountName = account.name;
     let disconnectInfo = null;
     let wsErrorMessage = null;
+    let unexpectedResponse = null;
     const logContext = buildWsLogContext({
       accountId: account.id,
       accountName: account.name,
@@ -494,55 +510,59 @@ async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl 
       wsUrl: resolvedWsUrl,
     });
 
-    candidateClient.onDisconnect = (code, reason) => {
+    candidateClient.onDisconnect = (code, reason, meta) => {
       disconnectInfo = { code, reason };
       console.warn('🔌 批量任务连接断开', {
         ...logContext,
         disconnect: normalizeDisconnectInfo(disconnectInfo),
+        handshake: meta || candidateClient.lastConnectMeta || null,
       });
       activeConnections.delete(account.id);
       unregisterAccountClient(account.id, candidateClient);
     };
 
-    candidateClient.onError = (error) => {
+    candidateClient.onError = (error, meta) => {
       wsErrorMessage = normalizeErrorMessage(error);
       console.error('❌ 批量任务连接错误', {
         ...logContext,
         error: wsErrorMessage,
+        handshake: meta || candidateClient.lastConnectMeta || null,
       });
       activeConnections.delete(account.id);
       unregisterAccountClient(account.id, candidateClient);
+    };
+
+    candidateClient.onUnexpectedResponse = (details, meta) => {
+      unexpectedResponse = details;
+      console.error('🚫 批量任务握手异常响应', {
+        ...logContext,
+        unexpectedResponse: details,
+        handshake: meta || candidateClient.lastConnectMeta || null,
+      });
     };
 
     try {
       console.log('🔄 尝试建立批量任务WebSocket连接', logContext);
       await candidateClient.connect();
-      if (!candidateClient.connected) {
+      if (!candidateClient.isSocketOpen()) {
         throw new Error('WebSocket未连接');
       }
       activeConnections.set(account.id, candidateClient);
       registerAccountClient(account.id, candidateClient);
-      console.log('✅ 批量任务WebSocket连接成功', logContext);
-      try {
-        candidateClient.sendDataBundleVer();
-      } catch (error) {
-        console.warn('⚠️ 批量任务初始化请求失败(可忽略)', {
-          ...logContext,
-          error: normalizeErrorMessage(error),
-        });
-      }
-      try {
-        await candidateClient.getRoleInfo(8000);
-      } catch (error) {
-        if (String(error?.message || '').includes('WebSocket未连接') || !candidateClient.connected) {
-          throw error;
-        }
-        console.warn('⚠️ 批量任务角色信息预热失败(可忽略)', {
-          ...logContext,
-          error: normalizeErrorMessage(error),
-        });
-      }
-      if (!candidateClient.connected) {
+      console.log('✅ 批量任务WebSocket连接成功', {
+        ...logContext,
+        handshake: candidateClient.lastConnectMeta || null,
+      });
+      const warmup = await warmupGameClient(candidateClient, {
+        roleInfoTimeout: 8000,
+        includeRoleId: false,
+      });
+      console.log('🔥 批量任务连接预热完成', {
+        ...logContext,
+        handshake: candidateClient.lastConnectMeta || null,
+        warmup,
+      });
+      if (!candidateClient.isSocketOpen()) {
         throw new Error('WebSocket未连接');
       }
       client = candidateClient;
@@ -555,6 +575,8 @@ async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl 
         error: normalizeErrorMessage(error),
         disconnect: normalizeDisconnectInfo(disconnectInfo),
         wsError: wsErrorMessage || null,
+        unexpectedResponse,
+        handshake: candidateClient.lastConnectMeta || null,
       });
       candidateClient.disconnect();
       activeConnections.delete(account.id);

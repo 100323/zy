@@ -1,11 +1,59 @@
 import crypto from 'crypto';
 
-function truncate(value, maxLength = 120) {
+export function truncate(value, maxLength = 120) {
   const text = String(value || '');
   if (text.length <= maxLength) {
     return text;
   }
   return `${text.slice(0, maxLength)}…`;
+}
+
+export function summarizeHeaders(headers = {}, maxEntries = 12) {
+  if (!headers || typeof headers !== 'object') {
+    return {};
+  }
+
+  const preferredKeys = [
+    'server',
+    'content-type',
+    'content-length',
+    'cf-cache-status',
+    'cf-ray',
+    'location',
+    'set-cookie',
+    'sec-websocket-accept',
+    'sec-websocket-version',
+    'www-authenticate',
+    'x-powered-by',
+  ];
+
+  const entries = [];
+  const pushEntry = (key) => {
+    if (!key || entries.length >= maxEntries) {
+      return;
+    }
+    const value = headers[key];
+    if (value === undefined) {
+      return;
+    }
+    entries.push([
+      key,
+      Array.isArray(value)
+        ? value.map((item) => truncate(item, 120))
+        : truncate(value, 160),
+    ]);
+  };
+
+  preferredKeys.forEach(pushEntry);
+
+  Object.keys(headers).forEach((key) => {
+    if (entries.length >= maxEntries || preferredKeys.includes(key)) {
+      return;
+    }
+    pushEntry(key);
+  });
+
+  return Object.fromEntries(entries);
 }
 
 export function getTokenFingerprint(token) {

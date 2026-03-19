@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import { bon, encode, parse, getEnc } from '../../../frontend/src/utils/bonProtocol.js';
 import config from '../config/index.js';
+import { normalizeErrorMessage, summarizeHeaders, truncate } from './wsDiagnostics.js';
 
 const ERROR_CODE_MAP = {
   700010: '任务未达成完成条件',
@@ -117,6 +118,31 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function describeReadyState(readyState) {
+  switch (readyState) {
+    case WebSocket.CONNECTING:
+      return 'CONNECTING';
+    case WebSocket.OPEN:
+      return 'OPEN';
+    case WebSocket.CLOSING:
+      return 'CLOSING';
+    case WebSocket.CLOSED:
+      return 'CLOSED';
+    default:
+      return 'UNKNOWN';
+  }
+}
+
+function normalizeCloseReason(reason) {
+  if (reason === undefined || reason === null) {
+    return '';
+  }
+  if (Buffer.isBuffer(reason)) {
+    return reason.toString();
+  }
+  return String(reason);
+}
+
 export class GameClient {
   constructor(token, options = {}) {
     this.token = token;
@@ -141,52 +167,131 @@ export class GameClient {
     this.onConnect = null;
     this.onDisconnect = null;
     this.onError = null;
+    this.onUnexpectedResponse = null;
+    this.lastConnectMeta = null;
+    this.lastMessageAt = null;
   }
 
   connect() {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      let opened = false;
+      const connectStartedAt = Date.now();
+      const connectMeta = {
+        startedAt: new Date(connectStartedAt).toISOString(),
+        openedAt: null,
+        closedAt: null,
+        connectElapsedMs: null,
+        closeElapsedMs: null,
+        closeBeforeOpen: false,
+        readyState: 'CONNECTING',
+        unexpectedResponse: null,
+        lastError: null,
+      };
+
+      const updateMeta = () => {
+        connectMeta.readyState = describeReadyState(this.ws?.readyState);
+        this.lastConnectMeta = { ...connectMeta };
+        return this.lastConnectMeta;
+      };
+
+      const rejectOnce = (error) => {
+        updateMeta();
+        if (settled) {
+          return;
+        }
+        settled = true;
+        reject(error);
+      };
+
+      const resolveOnce = () => {
+        updateMeta();
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve();
+      };
+
       try {
         this.ws = new WebSocket(this.wsUrl);
-        
+
         this.ws.on('open', () => {
+          opened = true;
           this.connected = true;
+          connectMeta.openedAt = new Date().toISOString();
+          connectMeta.connectElapsedMs = Date.now() - connectStartedAt;
           this._startHeartbeat();
-          
+
           if (this.onConnect) {
-            this.onConnect();
+            this.onConnect(updateMeta());
           }
-          
-          resolve();
+
+          resolveOnce();
         });
-        
+
+        this.ws.on('unexpected-response', (request, response) => {
+          const unexpectedResponse = {
+            statusCode: Number(response?.statusCode) || 0,
+            statusMessage: truncate(response?.statusMessage || '', 120),
+            headers: summarizeHeaders(response?.headers || {}),
+          };
+
+          connectMeta.unexpectedResponse = unexpectedResponse;
+          connectMeta.lastError = `WebSocket握手失败: HTTP ${unexpectedResponse.statusCode || 'unknown'}${unexpectedResponse.statusMessage ? ` ${unexpectedResponse.statusMessage}` : ''}`;
+
+          const error = new Error(connectMeta.lastError);
+          error.handshake = unexpectedResponse;
+
+          if (this.onUnexpectedResponse) {
+            this.onUnexpectedResponse(unexpectedResponse, updateMeta());
+          }
+
+          rejectOnce(error);
+        });
+
         this.ws.on('message', (data) => {
+          this.lastMessageAt = new Date().toISOString();
           this._handleMessage(data);
         });
-        
+
         this.ws.on('close', (code, reason) => {
           this.connected = false;
           this._stopHeartbeat();
+          connectMeta.closedAt = new Date().toISOString();
+          connectMeta.closeElapsedMs = Date.now() - connectStartedAt;
+          connectMeta.closeBeforeOpen = !opened;
           this._rejectPendingPromises(
-            new Error(`WebSocket连接已断开(${Number(code) || 0}${reason ? `: ${reason.toString()}` : ''})`)
+            new Error(`WebSocket连接已断开(${Number(code) || 0}${reason ? `: ${normalizeCloseReason(reason)}` : ''})`)
           );
-          
+
           if (this.onDisconnect) {
-            this.onDisconnect(code, reason.toString());
+            this.onDisconnect(code, normalizeCloseReason(reason), updateMeta());
+          }
+
+          if (!opened) {
+            rejectOnce(
+              new Error(
+                `WebSocket握手阶段断开(${Number(code) || 0}${reason ? `: ${normalizeCloseReason(reason)}` : ''})`
+              )
+            );
           }
         });
-        
+
         this.ws.on('error', (error) => {
           this.connected = false;
+          connectMeta.lastError = normalizeErrorMessage(error);
           this._rejectPendingPromises(error);
-          
+
           if (this.onError) {
-            this.onError(error);
+            this.onError(error, updateMeta());
           }
-          
-          reject(error);
+
+          rejectOnce(error);
         });
       } catch (error) {
-        reject(error);
+        connectMeta.lastError = normalizeErrorMessage(error);
+        rejectOnce(error);
       }
     });
   }
@@ -202,7 +307,7 @@ export class GameClient {
   }
 
   send(cmd, params = {}) {
-    if (!this.connected) {
+    if (!this.isSocketOpen()) {
       throw new Error('WebSocket未连接');
     }
 
@@ -213,9 +318,22 @@ export class GameClient {
     return message.seq;
   }
 
+  isSocketOpen() {
+    return this.connected && this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  getConnectionStateSummary() {
+    return {
+      connected: this.connected,
+      readyState: describeReadyState(this.ws?.readyState),
+      lastMessageAt: this.lastMessageAt,
+      lastConnectMeta: this.lastConnectMeta,
+    };
+  }
+
   sendWithPromise(cmd, params = {}, timeout = 15000) {
     return new Promise((resolve, reject) => {
-      if (!this.connected) {
+      if (!this.isSocketOpen()) {
         reject(new Error('WebSocket未连接'));
         return;
       }
@@ -324,7 +442,7 @@ export class GameClient {
 
   _startHeartbeat() {
     this.heartbeatTimer = setInterval(() => {
-      if (this.connected) {
+      if (this.isSocketOpen()) {
         this.send('_sys/ack', {});
       }
     }, this.heartbeatInterval);
@@ -353,7 +471,11 @@ export class GameClient {
     }
   }
 
-  async getRoleInfo(timeout = 15000) {
+  async getRoleInfo(timeoutOrOptions = 15000, options = {}) {
+    const timeout = typeof timeoutOrOptions === 'number' ? timeoutOrOptions : 15000;
+    const normalizedOptions = typeof timeoutOrOptions === 'object' && timeoutOrOptions !== null
+      ? timeoutOrOptions
+      : options;
     const params = {
       clientVersion: config.game.clientVersion,
       inviteUid: 0,
@@ -361,7 +483,8 @@ export class GameClient {
       platformExt: 'mix',
       scene: ''
     };
-    if (this.roleId) {
+    const includeRoleId = normalizedOptions.includeRoleId !== false;
+    if (includeRoleId && this.roleId) {
       params.roleId = this.roleId;
     }
     return this.sendWithPromise('role_getroleinfo', params, timeout);
