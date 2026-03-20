@@ -31,6 +31,7 @@ import {
   normalizeErrorMessage,
 } from '../utils/wsDiagnostics.js';
 import { warmupGameClient } from '../utils/wsWarmup.js';
+import { getRefreshedTokenSessionFromStoredBin } from '../utils/accountTokenRefresh.js';
 
 const activeConnections = new Map();
 const scheduledJobs = new Map();
@@ -149,6 +150,7 @@ function discardInactiveClient(accountId, accountName, client, reason) {
 
 async function reconnectCurrentClient(client, label = '任务') {
   const accountId = Number(client?.accountId);
+  const accountName = client?.accountName || null;
 
   try {
     client.disconnect();
@@ -156,32 +158,88 @@ async function reconnectCurrentClient(client, label = '任务') {
     // ignore
   }
 
-  await client.connect();
-  if (!client.isSocketOpen()) {
-    throw new Error('WebSocket未连接');
-  }
-
   if (Number.isFinite(accountId) && accountId > 0) {
-    activeConnections.set(accountId, client);
-    registerAccountClient(accountId, client);
+    activeConnections.delete(accountId);
+    unregisterAccountClient(accountId, client);
   }
 
-  const warmup = await warmupGameClient(client, {
-    roleInfoTimeout: 8000,
-    includeRoleId: false,
-  });
-  console.log(`🔥 ${label}重连预热完成`, {
-    accountId: accountId || null,
-    accountName: client?.accountName || null,
-    handshake: client.lastConnectMeta || null,
-    warmup,
-  });
+  const connectAndWarmup = async () => {
+    await client.connect();
+    if (!client.isSocketOpen()) {
+      throw new Error('WebSocket未连接');
+    }
 
-  if (!client.isSocketOpen()) {
-    throw new Error('WebSocket未连接');
+    if (Number.isFinite(accountId) && accountId > 0) {
+      activeConnections.set(accountId, client);
+      registerAccountClient(accountId, client);
+    }
+
+    const warmup = await warmupGameClient(client, {
+      roleInfoTimeout: 8000,
+      includeRoleId: false,
+    });
+    console.log(`🔥 ${label}重连预热完成`, {
+      accountId: accountId || null,
+      accountName,
+      handshake: client.lastConnectMeta || null,
+      warmup,
+    });
+
+    if (!client.isSocketOpen()) {
+      throw new Error('WebSocket未连接');
+    }
+
+    return client;
+  };
+
+  try {
+    return await connectAndWarmup();
+  } catch (error) {
+    if (Number.isFinite(accountId) && accountId > 0) {
+      activeConnections.delete(accountId);
+      unregisterAccountClient(accountId, client);
+    }
+
+    console.warn(`⚠️ ${label}重连失败，尝试通过后端持久化BIN刷新Token`, {
+      accountId: accountId || null,
+      accountName,
+      error: normalizeErrorMessage(error),
+      handshake: client?.lastConnectMeta || null,
+    });
+
+    if (!Number.isFinite(accountId) || accountId <= 0) {
+      throw error;
+    }
+
+    const refreshed = await getRefreshedTokenSessionFromStoredBin(accountId, {
+      trigger: 'scheduler-reconnect',
+      currentWsUrl: client?.wsUrl || '',
+    });
+
+    if (!refreshed?.refreshed || !refreshed?.candidates?.length) {
+      throw error;
+    }
+
+    const refreshedToken = refreshed.tokenMeta?.token || refreshed.token;
+    client.token = refreshedToken;
+    client.roleId = refreshed.roleId || client.roleId || null;
+    client.wsUrl = resolveWsUrl(refreshed.wsUrl || client.wsUrl || '', refreshedToken);
+
+    console.log(`♻️ ${label}已切换为后端BIN刷新后的Token重连`, {
+      accountId,
+      accountName,
+      roleId: client.roleId ?? null,
+      handshake: client?.lastConnectMeta || null,
+    });
+
+    try {
+      client.disconnect();
+    } catch {
+      // ignore
+    }
+
+    return await connectAndWarmup();
   }
-
-  return client;
 }
 
 async function recruitWithReconnect(client, recruitType, mode, maxReconnectRetries = 1) {
@@ -667,114 +725,158 @@ async function ensureConnectedClient(accountId, accountName, tokenCandidates, ro
   const connectPromise = (async () => {
     const maxRetries = 3;
     let lastError = null;
+    let currentCandidates = Array.isArray(tokenCandidates) ? [...tokenCandidates] : [];
+    let currentRoleId = roleId;
+    let currentWsUrl = wsUrl;
+    let refreshedByBin = false;
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      for (const [candidateIndex, token] of tokenCandidates.entries()) {
-        const resolvedWsUrl = resolveWsUrl(wsUrl, token);
-        const client = new GameClient(token, { roleId, wsUrl: resolvedWsUrl });
-        client.accountId = accountId;
-        client.accountName = accountName;
-        let disconnectInfo = null;
-        let wsErrorMessage = null;
-        let unexpectedResponse = null;
-        const logContext = buildWsLogContext({
+    for (let refreshRound = 0; refreshRound <= 1; refreshRound += 1) {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        for (const [candidateIndex, token] of currentCandidates.entries()) {
+          const resolvedWsUrl = resolveWsUrl(currentWsUrl, token);
+          const client = new GameClient(token, { roleId: currentRoleId, wsUrl: resolvedWsUrl });
+          client.accountId = accountId;
+          client.accountName = accountName;
+          let disconnectInfo = null;
+          let wsErrorMessage = null;
+          let unexpectedResponse = null;
+          const logContext = buildWsLogContext({
+            accountId,
+            accountName,
+            roleId: currentRoleId,
+            importMethod: extraContext.importMethod || null,
+            updatedAt: extraContext.updatedAt || null,
+            attempt,
+            maxRetries,
+            candidateIndex: candidateIndex + 1,
+            candidateCount: currentCandidates.length,
+            token,
+            wsUrl: resolvedWsUrl,
+            extra: {
+              refreshedByBin,
+            },
+          });
+
+          client.onDisconnect = (code, reason, meta) => {
+            disconnectInfo = { code, reason };
+            console.warn('🔌 定时任务连接断开', {
+              ...logContext,
+              disconnect: normalizeDisconnectInfo(disconnectInfo),
+              handshake: meta || client.lastConnectMeta || null,
+            });
+            activeConnections.delete(accountId);
+            unregisterAccountClient(accountId, client);
+          };
+
+          client.onError = (error, meta) => {
+            wsErrorMessage = normalizeErrorMessage(error);
+            console.error('❌ 定时任务连接错误', {
+              ...logContext,
+              error: wsErrorMessage,
+              handshake: meta || client.lastConnectMeta || null,
+            });
+            activeConnections.delete(accountId);
+            unregisterAccountClient(accountId, client);
+          };
+
+          client.onUnexpectedResponse = (details, meta) => {
+            unexpectedResponse = details;
+            console.error('🚫 定时任务握手异常响应', {
+              ...logContext,
+              unexpectedResponse: details,
+              handshake: meta || client.lastConnectMeta || null,
+            });
+          };
+
+          try {
+            console.log('🔄 尝试建立定时任务WebSocket连接', logContext);
+            await client.connect();
+            if (!client.isSocketOpen()) {
+              throw new Error('WebSocket未连接');
+            }
+            activeConnections.set(accountId, client);
+            registerAccountClient(accountId, client);
+            console.log('✅ 定时任务WebSocket连接成功', {
+              ...logContext,
+              handshake: client.lastConnectMeta || null,
+            });
+            const warmup = await warmupGameClient(client, {
+              roleInfoTimeout: 8000,
+              includeRoleId: false,
+            });
+            console.log('🔥 定时任务连接预热完成', {
+              ...logContext,
+              handshake: client.lastConnectMeta || null,
+              warmup,
+            });
+            if (!client.isSocketOpen()) {
+              throw new Error('WebSocket未连接');
+            }
+            return client;
+          } catch (error) {
+            lastError = error;
+            console.warn('⚠️ 定时任务候选Token连接失败', {
+              ...logContext,
+              error: normalizeErrorMessage(error),
+              disconnect: normalizeDisconnectInfo(disconnectInfo),
+              wsError: wsErrorMessage || null,
+              unexpectedResponse,
+              handshake: client.lastConnectMeta || null,
+            });
+            client.disconnect();
+            activeConnections.delete(accountId);
+            unregisterAccountClient(accountId, client);
+          }
+        }
+
+        console.error('⚠️ 定时任务连接批次失败', {
           accountId,
           accountName,
-          roleId,
+          roleId: currentRoleId ?? null,
           importMethod: extraContext.importMethod || null,
           updatedAt: extraContext.updatedAt || null,
           attempt,
           maxRetries,
-          candidateIndex: candidateIndex + 1,
-          candidateCount: tokenCandidates.length,
-          token,
-          wsUrl: resolvedWsUrl,
+          refreshedByBin,
+          error: normalizeErrorMessage(lastError),
         });
-
-        client.onDisconnect = (code, reason, meta) => {
-          disconnectInfo = { code, reason };
-          console.warn('🔌 定时任务连接断开', {
-            ...logContext,
-            disconnect: normalizeDisconnectInfo(disconnectInfo),
-            handshake: meta || client.lastConnectMeta || null,
-          });
-          activeConnections.delete(accountId);
-          unregisterAccountClient(accountId, client);
-        };
-
-        client.onError = (error, meta) => {
-          wsErrorMessage = normalizeErrorMessage(error);
-          console.error('❌ 定时任务连接错误', {
-            ...logContext,
-            error: wsErrorMessage,
-            handshake: meta || client.lastConnectMeta || null,
-          });
-          activeConnections.delete(accountId);
-          unregisterAccountClient(accountId, client);
-        };
-
-        client.onUnexpectedResponse = (details, meta) => {
-          unexpectedResponse = details;
-          console.error('🚫 定时任务握手异常响应', {
-            ...logContext,
-            unexpectedResponse: details,
-            handshake: meta || client.lastConnectMeta || null,
-          });
-        };
-
-        try {
-          console.log('🔄 尝试建立定时任务WebSocket连接', logContext);
-          await client.connect();
-          if (!client.isSocketOpen()) {
-            throw new Error('WebSocket未连接');
-          }
-          activeConnections.set(accountId, client);
-          registerAccountClient(accountId, client);
-          console.log('✅ 定时任务WebSocket连接成功', {
-            ...logContext,
-            handshake: client.lastConnectMeta || null,
-          });
-          const warmup = await warmupGameClient(client, {
-            roleInfoTimeout: 8000,
-            includeRoleId: false,
-          });
-          console.log('🔥 定时任务连接预热完成', {
-            ...logContext,
-            handshake: client.lastConnectMeta || null,
-            warmup,
-          });
-          if (!client.isSocketOpen()) {
-            throw new Error('WebSocket未连接');
-          }
-          return client;
-        } catch (error) {
-          lastError = error;
-          console.warn('⚠️ 定时任务候选Token连接失败', {
-            ...logContext,
-            error: normalizeErrorMessage(error),
-            disconnect: normalizeDisconnectInfo(disconnectInfo),
-            wsError: wsErrorMessage || null,
-            unexpectedResponse,
-            handshake: client.lastConnectMeta || null,
-          });
-          client.disconnect();
-          activeConnections.delete(accountId);
-          unregisterAccountClient(accountId, client);
+        if (attempt < maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, 1200));
         }
       }
-      console.error('⚠️ 定时任务连接批次失败', {
-        accountId,
-        accountName,
-        roleId: roleId ?? null,
-        importMethod: extraContext.importMethod || null,
-        updatedAt: extraContext.updatedAt || null,
-        attempt,
-        maxRetries,
-        error: normalizeErrorMessage(lastError),
-      });
-      if (attempt < maxRetries) {
-        await new Promise((resolve) => setTimeout(resolve, 1200));
+
+      if (refreshedByBin) {
+        break;
       }
+
+      try {
+        const refreshed = await getRefreshedTokenSessionFromStoredBin(accountId, {
+          trigger: 'scheduler-connect',
+          currentWsUrl,
+        });
+        if (refreshed?.refreshed && refreshed?.candidates?.length) {
+          currentCandidates = refreshed.candidates;
+          currentRoleId = refreshed.roleId || currentRoleId;
+          currentWsUrl = refreshed.wsUrl || currentWsUrl || '';
+          refreshedByBin = true;
+          console.log('♻️ 定时任务连接已切换为后端BIN刷新后的Token重试', {
+            accountId,
+            accountName,
+            roleId: currentRoleId ?? null,
+            importMethod: extraContext.importMethod || null,
+            updatedAt: extraContext.updatedAt || null,
+            candidateCount: currentCandidates.length,
+          });
+          continue;
+        }
+      } catch (error) {
+        console.warn('⚠️ 定时任务连接通过持久化BIN刷新Token失败', {
+          accountId,
+          accountName,
+          error: normalizeErrorMessage(error),
+        });
+      }
+      break;
     }
 
     throw new Error(lastError?.message || 'WebSocket连接失败');

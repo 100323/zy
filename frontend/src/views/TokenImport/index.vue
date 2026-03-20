@@ -365,12 +365,14 @@ const testBackendConnection = async (token) => {
     }
 
     message.info(`正在测试后端连接: ${token.name}`);
+    const backendBin = await tokenStore.getBackendBinPayload(token);
     const res = await api.post(
       `/accounts/${accountId}/test-connection`,
       {
         timeout: 30000,
         token: token.token || "",
         wsUrl: token.wsUrl || "",
+        binData: backendBin?.binData || "",
         persist: true,
       },
       { timeout: 30000 }
@@ -404,23 +406,28 @@ const saveEdit = async () => {
   try {
     await editFormRef.value.validate();
 
-    tokenStore.updateToken(editingToken.value.id, {
+    const nextTokenData = {
+      ...editingToken.value,
       name: editForm.name,
       token: editForm.token,
       server: editForm.server,
       wsUrl: editForm.wsUrl,
       remark: editForm.remark,
-    });
+    };
+
+    tokenStore.updateToken(editingToken.value.id, nextTokenData);
 
     const accountId = String(editingToken.value.id || "");
     if (/^\d+$/.test(accountId)) {
       try {
+        const backendBin = await tokenStore.getBackendBinPayload(nextTokenData);
         await api.put(`/accounts/${accountId}`, {
           name: editForm.name,
           token: editForm.token,
           server: editForm.server,
           wsUrl: editForm.wsUrl,
           remark: editForm.remark,
+          binData: backendBin?.binData || "",
         });
       } catch (error) {
         message.warning("账号已更新，但同步后端失败");
@@ -488,14 +495,22 @@ const refreshToken = async (token) => {
         server: data.server || token.server,
         lastRefreshed: Date.now(),
       });
+      const updatedToken = {
+        ...token,
+        token: data.token,
+        server: data.server || token.server,
+        lastRefreshed: Date.now(),
+      };
       const accountId = String(token.id || "");
       if (/^\d+$/.test(accountId)) {
         try {
+          const backendBin = await tokenStore.getBackendBinPayload(updatedToken);
           await api.put(`/accounts/${accountId}`, {
             token: data.token,
             server: data.server || token.server,
             wsUrl: token.wsUrl || "",
             remark: token.remark || "",
+            binData: backendBin?.binData || "",
           });
         } catch {
           // 忽略同步失败
@@ -531,7 +546,8 @@ const refreshToken = async (token) => {
       }
       if (userToken) {
         const newToken = await transformToken(userToken);
-        tokenStore.updateToken(token.id, {
+        const updatedToken = {
+          ...token,
           token: newToken,
           lastRefreshed: Date.now(),
           storageKey: token.id,
@@ -546,14 +562,17 @@ const refreshToken = async (token) => {
                 .filter(Boolean),
             ),
           ),
-        });
+        };
+        tokenStore.updateToken(token.id, updatedToken);
         const accountId = String(token.id || "");
         if (/^\d+$/.test(accountId)) {
           try {
+            const backendBin = await tokenStore.getBackendBinPayload(updatedToken);
             await api.put(`/accounts/${accountId}`, {
               token: newToken,
               wsUrl: token.wsUrl || "",
               remark: token.remark || "",
+              binData: backendBin?.binData || "",
             });
           } catch {
             // 忽略同步失败

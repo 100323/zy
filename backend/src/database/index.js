@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS game_accounts (
   name TEXT NOT NULL,
   token_encrypted TEXT NOT NULL,
   token_iv TEXT NOT NULL,
+  bin_encrypted TEXT,
+  bin_iv TEXT,
+  bin_updated_at DATETIME,
   ws_url TEXT,
   server TEXT,
   remark TEXT,
@@ -215,6 +218,15 @@ function ensureGameAccountSchema(db) {
     );
     if (!columns.has('ws_url')) {
       db.run('ALTER TABLE game_accounts ADD COLUMN ws_url TEXT');
+    }
+    if (!columns.has('bin_encrypted')) {
+      db.run('ALTER TABLE game_accounts ADD COLUMN bin_encrypted TEXT');
+    }
+    if (!columns.has('bin_iv')) {
+      db.run('ALTER TABLE game_accounts ADD COLUMN bin_iv TEXT');
+    }
+    if (!columns.has('bin_updated_at')) {
+      db.run('ALTER TABLE game_accounts ADD COLUMN bin_updated_at DATETIME');
     }
   } catch (error) {
     console.warn('⚠️ 检查 game_accounts 表结构失败:', error?.message || error);

@@ -27,6 +27,7 @@ const app = express();
 
 app.use(cors());
 app.use(express.json({
+  limit: '10mb',
   verify: (req, res, buf) => {
     req.rawBody = buf;
   },
@@ -34,7 +35,7 @@ app.use(express.json({
     return req.path.includes('/hortor/comb-login-server/api/v1/login');
   }
 }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.use('/api/auth', authRoutes);
 app.use('/api/accounts', accountRoutes);

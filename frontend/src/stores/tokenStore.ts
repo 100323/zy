@@ -274,6 +274,39 @@ export const useTokenStore = defineStore("tokens", () => {
     };
   };
 
+  const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+  };
+
+  const getBackendBinPayload = async (tokenData: TokenData | null | undefined) => {
+    if (!tokenData) return null;
+    if (tokenData.importMethod !== "bin" && tokenData.importMethod !== "wxQrcode") {
+      return null;
+    }
+
+    const { data: userToken, matchedKey, triedKeys } = await loadStoredBinData(String(tokenData.id || ""), tokenData);
+    if (!userToken) {
+      return {
+        binData: "",
+        matchedKey: null as string | null,
+        triedKeys,
+      };
+    }
+
+    return {
+      binData: arrayBufferToBase64(userToken),
+      matchedKey,
+      triedKeys,
+    };
+  };
+
   const syncProtocolState = (tokenId: string, body: any) => {
     if (!body) return;
 
@@ -542,6 +575,7 @@ export const useTokenStore = defineStore("tokens", () => {
 
     const syncPromise = (async () => {
       try {
+        const backendBin = await getBackendBinPayload(tokenData);
         const createRes = await api.post("/accounts", {
           name: tokenData.name,
           token: rawToken,
@@ -551,6 +585,7 @@ export const useTokenStore = defineStore("tokens", () => {
           avatar: tokenData.avatar || "",
           importMethod: tokenData.importMethod || "manual",
           sourceUrl: tokenData.sourceUrl || "",
+          binData: backendBin?.binData || "",
         });
 
         if (createRes?.success && createRes?.data?.id !== undefined) {
@@ -565,6 +600,7 @@ export const useTokenStore = defineStore("tokens", () => {
       }
 
       try {
+        const backendBin = await getBackendBinPayload(tokenData);
         const listRes = await api.get("/accounts");
         const exists = listRes?.data?.find((item: any) => item.name === tokenData.name);
         if (!exists?.id) {
@@ -576,6 +612,7 @@ export const useTokenStore = defineStore("tokens", () => {
           wsUrl: tokenData.wsUrl || "",
           remark: tokenData.remark || "",
           avatar: tokenData.avatar || "",
+          binData: backendBin?.binData || "",
         });
         await migrateTokenIdToBackendId(tokenData.id, String(exists.id));
       } catch (error) {
@@ -935,11 +972,13 @@ export const useTokenStore = defineStore("tokens", () => {
       const accountId = String(tokenId || "");
       if (/^\d+$/.test(accountId)) {
         try {
+          const backendBin = await getBackendBinPayload(updatedToken || gameToken);
           await api.put(`/accounts/${accountId}`, {
             token: updatedToken?.token || gameToken.token,
             server: updatedToken?.server || gameToken.server || "",
             wsUrl: updatedToken?.wsUrl || gameToken.wsUrl || "",
             remark: updatedToken?.remark || gameToken.remark || "",
+            binData: backendBin?.binData || "",
           });
           wsLogger.info(`刷新后的Token已同步到后端 [${tokenId}]`, {
             accountId,
@@ -2262,6 +2301,7 @@ export const useTokenStore = defineStore("tokens", () => {
     cleanExpiredTokens,
     upgradeTokenToPermanent,
     initTokenStore,
+    getBackendBinPayload,
 
     //游戏内发送消息方法
     sendMessageToLegion,

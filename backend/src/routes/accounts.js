@@ -8,10 +8,31 @@ import config from '../config/index.js';
 import { ensureDefaultTaskConfigsForAccount } from './tasks.js';
 import { buildWsLogContext, normalizeDisconnectInfo, normalizeErrorMessage } from '../utils/wsDiagnostics.js';
 import { warmupGameClient } from '../utils/wsWarmup.js';
+import { isLikelyBase64, normalizeBase64Text } from '../utils/binStorage.js';
+import { refreshAccountTokenFromStoredBin } from '../utils/accountTokenRefresh.js';
 
 const router = Router();
 
 router.use(authMiddleware);
+
+function extractBinBase64(body = {}) {
+  const candidates = [
+    body?.binData,
+    body?.binBase64,
+    body?.bin_data,
+    body?.bin_base64,
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const normalized = normalizeBase64Text(candidate);
+    if (isLikelyBase64(normalized)) {
+      return normalized;
+    }
+  }
+
+  return '';
+}
 
 function buildWsTokenPayload(token) {
   const raw = typeof token === 'string' ? token.trim() : '';
@@ -132,6 +153,7 @@ router.post('/', async (req, res) => {
     const wsUrl = typeof req.body?.wsUrl === 'string'
       ? req.body.wsUrl.trim()
       : (typeof req.body?.ws_url === 'string' ? req.body.ws_url.trim() : '');
+    const binBase64 = extractBinBase64(req.body);
     const normalizedName = String(name || '').trim();
 
     if (!normalizedName || !token) {
@@ -175,13 +197,28 @@ router.post('/', async (req, res) => {
 
     const rawTokenText = String(token).trim();
     const { encrypted, iv } = encrypt(rawTokenText);
+    const encryptedBin = binBase64 ? encrypt(binBase64) : null;
 
     let result;
     try {
       result = run(
-        `INSERT INTO game_accounts (user_id, name, token_encrypted, token_iv, ws_url, server, remark, avatar, import_method, source_url) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [req.user.userId, normalizedName, encrypted, iv, wsUrl || '', server || '', remark || '', avatar || '', importMethod || 'manual', sourceUrl || '']
+        `INSERT INTO game_accounts (user_id, name, token_encrypted, token_iv, bin_encrypted, bin_iv, bin_updated_at, ws_url, server, remark, avatar, import_method, source_url) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          req.user.userId,
+          normalizedName,
+          encrypted,
+          iv,
+          encryptedBin?.encrypted || null,
+          encryptedBin?.iv || null,
+          encryptedBin ? new Date().toISOString() : null,
+          wsUrl || '',
+          server || '',
+          remark || '',
+          avatar || '',
+          importMethod || 'manual',
+          sourceUrl || '',
+        ]
       );
     } catch (error) {
       if (String(error?.message || '').includes('idx_game_accounts_user_name_unique')) {
@@ -206,6 +243,7 @@ router.post('/', async (req, res) => {
         accountName: normalizedName,
         userId: req.user.userId,
         importMethod: importMethod || 'manual',
+        persistedBin: !!encryptedBin,
         createdTaskConfigCount: seedResult.created,
         taskTypes: seedResult.insertedTaskTypes,
       });
@@ -241,6 +279,7 @@ router.put('/:id', (req, res) => {
     const wsUrl = typeof req.body?.wsUrl === 'string'
       ? req.body.wsUrl.trim()
       : (typeof req.body?.ws_url === 'string' ? req.body.ws_url.trim() : undefined);
+    const binBase64 = extractBinBase64(req.body);
 
     const account = get(
       'SELECT * FROM game_accounts WHERE id = ? AND user_id = ?',
@@ -280,6 +319,11 @@ router.put('/:id', (req, res) => {
       const { encrypted, iv } = encrypt(rawTokenText);
       updateFields.push('token_encrypted = ?', 'token_iv = ?');
       updateValues.push(encrypted, iv);
+    }
+    if (binBase64) {
+      const { encrypted, iv } = encrypt(binBase64);
+      updateFields.push('bin_encrypted = ?', 'bin_iv = ?', 'bin_updated_at = ?');
+      updateValues.push(encrypted, iv, new Date().toISOString());
     }
     if (wsUrl !== undefined) {
       updateFields.push('ws_url = ?');
@@ -391,7 +435,7 @@ router.get('/:id/token', (req, res) => {
 router.post('/:id/test-connection', async (req, res) => {
   try {
     const account = get(
-      'SELECT id, name, token_encrypted, token_iv, ws_url, server, import_method, updated_at FROM game_accounts WHERE id = ? AND user_id = ?',
+      'SELECT id, name, token_encrypted, token_iv, bin_encrypted, bin_iv, ws_url, server, import_method, updated_at FROM game_accounts WHERE id = ? AND user_id = ?',
       [req.params.id, req.user.userId]
     );
 
@@ -406,6 +450,7 @@ router.post('/:id/test-connection', async (req, res) => {
     const requestWsUrlText = typeof req.body?.wsUrl === 'string'
       ? req.body.wsUrl.trim()
       : (typeof req.body?.ws_url === 'string' ? req.body.ws_url.trim() : '');
+    const requestBinBase64 = extractBinBase64(req.body);
     const rawToken = requestTokenText || decrypt(account.token_encrypted, account.token_iv);
     const tokenMeta = parseTokenPayload(rawToken);
     const tokenCandidates = tokenMeta.candidates?.length ? tokenMeta.candidates : [tokenMeta.token].filter(Boolean);
@@ -416,13 +461,18 @@ router.post('/:id/test-connection', async (req, res) => {
       });
     }
 
-    if (req.body?.persist === true && (requestTokenText || requestWsUrlText)) {
+    if (req.body?.persist === true && (requestTokenText || requestWsUrlText || requestBinBase64)) {
       const updateFields = [];
       const updateValues = [];
       if (requestTokenText) {
         const { encrypted, iv } = encrypt(requestTokenText);
         updateFields.push('token_encrypted = ?', 'token_iv = ?');
         updateValues.push(encrypted, iv);
+      }
+      if (requestBinBase64) {
+        const { encrypted, iv } = encrypt(requestBinBase64);
+        updateFields.push('bin_encrypted = ?', 'bin_iv = ?', 'bin_updated_at = ?');
+        updateValues.push(encrypted, iv, new Date().toISOString());
       }
       if (requestWsUrlText) {
         updateFields.push('ws_url = ?');
@@ -439,9 +489,12 @@ router.post('/:id/test-connection', async (req, res) => {
         accountName: account.name,
         importMethod: account.import_method || 'manual',
         persistedToken: !!requestTokenText,
+        persistedBin: !!requestBinBase64,
         persistedWsUrl: !!requestWsUrlText,
       });
     }
+
+    const hasStoredBin = !!requestBinBase64 || !!(account.bin_encrypted && account.bin_iv);
 
     const requestedTimeout = Number(req.body?.timeout);
     const roleInfoTimeout = Number.isFinite(requestedTimeout)
@@ -455,26 +508,31 @@ router.post('/:id/test-connection', async (req, res) => {
     let lastWsError = null;
     let lastHandshake = null;
     let lastWarmup = null;
+    let refreshedByBin = false;
 
-    for (const [index, candidateToken] of tokenCandidates.entries()) {
+    const tryCandidates = async (candidates, tokenMetaForAttempt, context = {}) => {
+      for (const [index, candidateToken] of candidates.entries()) {
       lastWarmup = null;
       lastHandshake = null;
-      const wsUrl = requestWsUrlText || account.ws_url || tokenMeta.wsUrl || '';
+      const wsUrl = requestWsUrlText || account.ws_url || tokenMetaForAttempt.wsUrl || '';
       const resolvedWsUrl = resolveWsUrl(wsUrl, candidateToken);
-      const client = new GameClient(candidateToken, { roleId: tokenMeta.roleId, wsUrl: resolvedWsUrl });
+      const client = new GameClient(candidateToken, { roleId: tokenMetaForAttempt.roleId, wsUrl: resolvedWsUrl });
       let disconnectInfo = null;
       let wsErrorMessage = null;
       let unexpectedResponse = null;
       const logContext = buildWsLogContext({
         accountId: Number(account.id),
         accountName: account.name,
-        roleId: tokenMeta.roleId,
+        roleId: tokenMetaForAttempt.roleId,
         importMethod: account.import_method || 'manual',
         updatedAt: account.updated_at || null,
         candidateIndex: index + 1,
-        candidateCount: tokenCandidates.length,
+        candidateCount: candidates.length,
         token: candidateToken,
         wsUrl: resolvedWsUrl,
+        extra: {
+          refreshedByBin: !!context.refreshedByBin,
+        },
       });
       client.onDisconnect = (code, reason, meta) => {
         disconnectInfo = {
@@ -548,13 +606,14 @@ router.post('/:id/test-connection', async (req, res) => {
             accountId: account.id,
             accountName: account.name,
             server: account.server || '',
-            roleId: warmup.roleInfo?.role?.roleId || tokenMeta.roleId || null,
+            roleId: warmup.roleInfo?.role?.roleId || tokenMetaForAttempt.roleId || null,
             connectedMs,
             elapsedMs,
             roleName: warmup.roleInfo?.role?.name || account.name || null,
             tokenCandidateIndex: index,
             roleInfoError: warmup.roleInfoError,
             battleVersion: warmup.battleVersion,
+            refreshedByBin: !!context.refreshedByBin,
           }
         });
       } catch (error) {
@@ -575,6 +634,36 @@ router.post('/:id/test-connection', async (req, res) => {
         client.disconnect();
       }
     }
+    return null;
+    };
+
+    const directResult = await tryCandidates(tokenCandidates, tokenMeta, { refreshedByBin: false });
+    if (directResult) {
+      return directResult;
+    }
+
+    if (hasStoredBin) {
+      try {
+        const refreshed = await refreshAccountTokenFromStoredBin(account.id, { trigger: 'test-connection' });
+        if (refreshed?.refreshed && refreshed?.token) {
+          refreshedByBin = true;
+          const refreshedMeta = parseTokenPayload(refreshed.token);
+          const refreshedCandidates = refreshedMeta.candidates?.length
+            ? refreshedMeta.candidates
+            : [refreshedMeta.token].filter(Boolean);
+          const retriedResult = await tryCandidates(refreshedCandidates, refreshedMeta, { refreshedByBin: true });
+          if (retriedResult) {
+            return retriedResult;
+          }
+        }
+      } catch (error) {
+        console.warn('⚠️ 后端连接测试通过持久化BIN刷新Token失败', {
+          accountId: Number(account.id),
+          accountName: account.name,
+          error: normalizeErrorMessage(error),
+        });
+      }
+    }
 
     const elapsedMs = Date.now() - startedAt;
     return res.status(504).json({
@@ -591,7 +680,9 @@ router.post('/:id/test-connection', async (req, res) => {
         wsError: lastWsError,
         handshake: lastHandshake,
         warmup: lastWarmup,
-        tokenCandidateCount: tokenCandidates.length
+        tokenCandidateCount: tokenCandidates.length,
+        refreshedByBin,
+        hasStoredBin,
       }
     });
   } catch (error) {
