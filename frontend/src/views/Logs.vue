@@ -68,9 +68,9 @@
                 <div class="log-left">
                   <el-tag
                     size="small"
-                    :type="getLogStatusType(log.status)"
+                    :type="getLogStatusType(log)"
                   >
-                    {{ getLogStatusText(log.status) }}
+                    {{ getLogStatusText(log) }}
                   </el-tag>
                   <span class="log-time">{{ formatTime(log.created_at) }}</span>
                 </div>
@@ -98,6 +98,8 @@ const accountsLoading = ref(false);
 const loading = ref(false);
 const selectedAccountId = ref(null);
 const logs = ref([]);
+const taskTypeNameMap = ref({});
+const BENIGN_LOG_KEYWORDS = ['活动未开放', '不在开启时间内'];
 
 const currentAccountName = computed(() => {
   const currentAccount = accounts.value.find((account) => account.id === selectedAccountId.value);
@@ -105,16 +107,23 @@ const currentAccountName = computed(() => {
 });
 
 const getTaskLabel = (taskType) => {
-  return taskType || '-';
+  return taskTypeNameMap.value[taskType] || taskType || '-';
 };
 
-const getLogStatusType = (status) => {
+const getDisplayStatus = (log) => {
+  if (isBenignLog(log)) return 'ignored';
+  return log?.status || 'error';
+};
+
+const getLogStatusType = (log) => {
+  const status = getDisplayStatus(log);
   if (status === 'success') return 'success';
   if (status === 'ignored') return 'info';
   return 'danger';
 };
 
-const getLogStatusText = (status) => {
+const getLogStatusText = (log) => {
+  const status = getDisplayStatus(log);
   if (status === 'success') return '成功';
   if (status === 'ignored') return '已忽略';
   return '失败';
@@ -129,6 +138,28 @@ const formatTime = (time) => {
   const parsed = new Date(hasTimezone ? normalized : `${normalized}Z`);
 
   return Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleString('zh-CN');
+};
+
+const isBenignLog = (log) => {
+  const text = `${log?.message || ''} ${log?.details || ''}`;
+  return BENIGN_LOG_KEYWORDS.some((keyword) => text.includes(keyword));
+};
+
+const fetchTaskTypes = async () => {
+  try {
+    const res = await api.get('/tasks/types');
+    if (res.success && Array.isArray(res.data)) {
+      taskTypeNameMap.value = res.data.reduce((acc, item) => {
+        const type = String(item?.type || '').trim();
+        if (type) {
+          acc[type] = item?.name || type;
+        }
+        return acc;
+      }, {});
+    }
+  } catch (error) {
+    console.error('获取任务类型失败:', error);
+  }
 };
 
 const fetchAccounts = async () => {
@@ -193,6 +224,7 @@ const refreshCurrentView = async () => {
 };
 
 onMounted(async () => {
+  await fetchTaskTypes();
   await fetchAccounts();
   await fetchLogs();
 });
@@ -205,6 +237,15 @@ onMounted(async () => {
     justify-content: space-between;
     align-items: center;
     gap: 16px;
+  }
+
+  :deep(.el-card__header) {
+    border-bottom: none;
+    padding-bottom: 8px;
+  }
+
+  :deep(.el-card__body) {
+    padding-top: 12px;
   }
 
   .header-tip {

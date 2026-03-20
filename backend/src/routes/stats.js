@@ -10,11 +10,47 @@ const router = Router();
 
 router.use(authMiddleware);
 
+const BENIGN_FAILURE_KEYWORDS = ['模块未开启', '活动未开放', '不在开启时间内'];
+const SHANGHAI_UTC_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function buildIgnoredFailureCondition(alias) {
+  const messageExpr = `COALESCE(${alias}.message, '')`;
+  const detailsExpr = `COALESCE(${alias}.details, '')`;
+  const keywordConditions = BENIGN_FAILURE_KEYWORDS
+    .map((keyword) => `(${messageExpr} LIKE '%${keyword}%' OR ${detailsExpr} LIKE '%${keyword}%')`)
+    .join(' OR ');
+
+  return `(${alias}.status = 'ignored' OR (${alias}.status = 'error' AND (${keywordConditions})))`;
+}
+
+function formatSqliteUtcDateTime(date) {
+  return new Date(date.getTime()).toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function getShanghaiTodayUtcRange(now = new Date()) {
+  const shanghaiNow = new Date(now.getTime() + SHANGHAI_UTC_OFFSET_MS);
+  const startUtcMs = Date.UTC(
+    shanghaiNow.getUTCFullYear(),
+    shanghaiNow.getUTCMonth(),
+    shanghaiNow.getUTCDate(),
+    0,
+    0,
+    0,
+    0,
+  ) - SHANGHAI_UTC_OFFSET_MS;
+  const endUtcMs = startUtcMs + 24 * 60 * 60 * 1000;
+
+  return {
+    start: formatSqliteUtcDateTime(new Date(startUtcMs)),
+    end: formatSqliteUtcDateTime(new Date(endUtcMs)),
+  };
+}
+
 router.get('/overview', (req, res) => {
   try {
     const userId = req.user.userId;
-    const ignoredFailureConditionSingle = `(tl.status = 'ignored' OR (tl.status = 'error' AND tl.message LIKE '%模块未开启%'))`;
-    const ignoredFailureConditionBatch = `(btl.status = 'ignored' OR (btl.status = 'error' AND btl.message LIKE '%模块未开启%'))`;
+    const ignoredFailureConditionSingle = buildIgnoredFailureCondition('tl');
+    const ignoredFailureConditionBatch = buildIgnoredFailureCondition('btl');
 
     const accountCount = get(
       'SELECT COUNT(*) as count FROM game_accounts WHERE user_id = ?',
@@ -36,21 +72,21 @@ router.get('/overview', (req, res) => {
       [userId]
     );
 
-    const today = new Date().toISOString().split('T')[0];
+    const todayRange = getShanghaiTodayUtcRange();
     const todaySingleLogCount = get(
       `SELECT COUNT(*) as count
        FROM task_logs tl 
        JOIN game_accounts ga ON tl.account_id = ga.id 
-       WHERE ga.user_id = ? AND DATE(tl.created_at) = ?`,
-      [userId, today]
+       WHERE ga.user_id = ? AND tl.created_at >= ? AND tl.created_at < ?`,
+      [userId, todayRange.start, todayRange.end]
     );
 
     const todayBatchLogCount = get(
       `SELECT COUNT(*) as count
        FROM batch_task_logs btl
        JOIN batch_scheduled_tasks bst ON btl.batch_task_id = bst.id
-       WHERE bst.user_id = ? AND DATE(btl.created_at) = ?`,
-      [userId, today]
+       WHERE bst.user_id = ? AND btl.created_at >= ? AND btl.created_at < ?`,
+      [userId, todayRange.start, todayRange.end]
     );
 
     const enabledSingleTasks = all(
@@ -80,32 +116,32 @@ router.get('/overview', (req, res) => {
       `SELECT COUNT(*) as count
        FROM task_logs tl 
        JOIN game_accounts ga ON tl.account_id = ga.id 
-       WHERE ga.user_id = ? AND tl.status = 'error' AND DATE(tl.created_at) = ? AND NOT ${ignoredFailureConditionSingle}`,
-      [userId, today]
+       WHERE ga.user_id = ? AND tl.status = 'error' AND tl.created_at >= ? AND tl.created_at < ? AND NOT ${ignoredFailureConditionSingle}`,
+      [userId, todayRange.start, todayRange.end]
     );
 
     const failedBatchTaskCount = get(
       `SELECT COUNT(*) as count
        FROM batch_task_logs btl
        JOIN batch_scheduled_tasks bst ON btl.batch_task_id = bst.id
-       WHERE bst.user_id = ? AND btl.status = 'error' AND DATE(btl.created_at) = ? AND NOT ${ignoredFailureConditionBatch}`,
-      [userId, today]
+       WHERE bst.user_id = ? AND btl.status = 'error' AND btl.created_at >= ? AND btl.created_at < ? AND NOT ${ignoredFailureConditionBatch}`,
+      [userId, todayRange.start, todayRange.end]
     );
 
     const successSingleTaskCount = get(
       `SELECT COUNT(*) as count
        FROM task_logs tl 
        JOIN game_accounts ga ON tl.account_id = ga.id 
-       WHERE ga.user_id = ? AND tl.status = 'success' AND DATE(tl.created_at) = ?`,
-      [userId, today]
+       WHERE ga.user_id = ? AND tl.status = 'success' AND tl.created_at >= ? AND tl.created_at < ?`,
+      [userId, todayRange.start, todayRange.end]
     );
 
     const successBatchTaskCount = get(
       `SELECT COUNT(*) as count
        FROM batch_task_logs btl
        JOIN batch_scheduled_tasks bst ON btl.batch_task_id = bst.id
-       WHERE bst.user_id = ? AND btl.status = 'success' AND DATE(btl.created_at) = ?`,
-      [userId, today]
+       WHERE bst.user_id = ? AND btl.status = 'success' AND btl.created_at >= ? AND btl.created_at < ?`,
+      [userId, todayRange.start, todayRange.end]
     );
 
     res.json({
@@ -210,13 +246,14 @@ router.get('/task-summary', (req, res) => {
   try {
     const userId = req.user.userId;
     const { days = 7 } = req.query;
+    const ignoredFailureConditionSingle = buildIgnoredFailureCondition('tl');
 
     const taskSummary = all(
       `SELECT 
         tl.task_type,
         COUNT(*) as total_count,
         SUM(CASE WHEN tl.status = 'success' THEN 1 ELSE 0 END) as success_count,
-        SUM(CASE WHEN tl.status = 'error' AND NOT (tl.message LIKE '%模块未开启%') THEN 1 ELSE 0 END) as error_count,
+        SUM(CASE WHEN tl.status = 'error' AND NOT ${ignoredFailureConditionSingle} THEN 1 ELSE 0 END) as error_count,
         MAX(tl.created_at) as last_run
        FROM task_logs tl
        JOIN game_accounts ga ON tl.account_id = ga.id

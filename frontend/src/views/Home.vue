@@ -127,8 +127,8 @@
               class="activity-item"
             >
               <div class="activity-icon">
-                <el-icon :size="20" :color="getActivityColor(activity.status)">
-                  <component :is="getActivityIcon(activity.status)" />
+                <el-icon :size="20" :color="getActivityColor(activity)">
+                  <component :is="getActivityIcon(activity)" />
                 </el-icon>
               </div>
               <div class="activity-content">
@@ -201,14 +201,27 @@ const systemStatus = ref({
 const recentActivities = ref([]);
 const statusLoading = ref(false);
 let refreshTimer = null;
+const BENIGN_LOG_KEYWORDS = ['活动未开放', '不在开启时间内'];
 
-const getActivityColor = (status) => {
+const isBenignActivity = (activity) => {
+  const text = `${activity?.message || ''} ${activity?.details || ''}`;
+  return BENIGN_LOG_KEYWORDS.some((keyword) => text.includes(keyword));
+};
+
+const getActivityStatus = (activity) => {
+  if (isBenignActivity(activity)) return 'ignored';
+  return activity?.status || 'error';
+};
+
+const getActivityColor = (activity) => {
+  const status = getActivityStatus(activity);
   if (status === 'success') return '#67C23A';
   if (status === 'ignored') return '#909399';
   return '#F56C6C';
 };
 
-const getActivityIcon = (status) => {
+const getActivityIcon = (activity) => {
+  const status = getActivityStatus(activity);
   if (status === 'success') return CircleCheckFilled;
   if (status === 'ignored') return InfoFilled;
   return CircleCloseFilled;
@@ -424,6 +437,15 @@ onUnmounted(() => {
 
 .status-card {
   min-height: 300px;
+
+  :deep(.el-card__header) {
+    border-bottom: none;
+    padding-bottom: 8px;
+  }
+
+  :deep(.el-card__body) {
+    padding-top: 12px;
+  }
 }
 
 .card-header {
