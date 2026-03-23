@@ -28,7 +28,17 @@ export const config = {
     timezone: 'Asia/Shanghai'
   },
   scheduler: {
-    maxConcurrentAccounts: Number(process.env.MAX_CONCURRENT_ACCOUNTS) || 5
+    maxConcurrentAccounts: Number(process.env.MAX_CONCURRENT_ACCOUNTS) || 2,
+    staggerWindowMs: Number(process.env.SCHEDULER_STAGGER_WINDOW_MS) || 180000,
+    sensitiveTaskThrottleMs: {
+      HANGUP_ADD_TIME: Number(process.env.HANGUP_ADD_TIME_THROTTLE_MS) || 3000,
+      LEGACY_CLAIM: Number(process.env.LEGACY_CLAIM_THROTTLE_MS) || 4000,
+    },
+    sensitiveTaskRetry: {
+      maxRetries: Number(process.env.SENSITIVE_TASK_MAX_RETRIES) || 2,
+      baseDelayMs: Number(process.env.SENSITIVE_TASK_RETRY_BASE_DELAY_MS) || 3000,
+      maxDelayMs: Number(process.env.SENSITIVE_TASK_RETRY_MAX_DELAY_MS) || 8000,
+    }
   }
 };
 

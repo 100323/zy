@@ -10,7 +10,16 @@ const router = Router();
 
 router.use(authMiddleware);
 
-const BENIGN_FAILURE_KEYWORDS = ['模块未开启', '活动未开放', '不在开启时间内'];
+const BENIGN_FAILURE_KEYWORDS = [
+  '模块未开启',
+  '活动未开放',
+  '不在开启时间内',
+  '出了点小问题',
+  '扫荡条件不满足',
+  '已经选择过上阵武将了',
+  '今日已领取免费奖励',
+  '今天已经签到过了',
+];
 const SHANGHAI_UTC_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 function buildIgnoredFailureCondition(alias) {

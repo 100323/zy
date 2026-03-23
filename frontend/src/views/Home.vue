@@ -201,7 +201,15 @@ const systemStatus = ref({
 const recentActivities = ref([]);
 const statusLoading = ref(false);
 let refreshTimer = null;
-const BENIGN_LOG_KEYWORDS = ['活动未开放', '不在开启时间内'];
+const BENIGN_LOG_KEYWORDS = [
+  '活动未开放',
+  '不在开启时间内',
+  '出了点小问题',
+  '扫荡条件不满足',
+  '已经选择过上阵武将了',
+  '今日已领取免费奖励',
+  '今天已经签到过了',
+];
 
 const isBenignActivity = (activity) => {
   const text = `${activity?.message || ''} ${activity?.details || ''}`;

@@ -16,6 +16,7 @@ import {
   runAccountTaskExclusive,
   registerAccountClient,
   unregisterAccountClient,
+  runTaskTypeThrottled,
 } from '../utils/accountTaskCoordinator.js';
 import { getUserAvailabilityStatus } from '../utils/userAccess.js';
 import {
@@ -25,6 +26,12 @@ import {
 } from '../utils/wsDiagnostics.js';
 import { warmupGameClient } from '../utils/wsWarmup.js';
 import { getRefreshedTokenSessionFromStoredBin } from '../utils/accountTokenRefresh.js';
+import {
+  getSensitiveTaskRetryConfig,
+  isTooFastError,
+  sleep,
+  waitForScheduledTaskStagger,
+} from '../utils/taskExecutionControl.js';
 
 const scheduledBatchJobs = new Map();
 const activeConnections = new Map();
@@ -53,6 +60,7 @@ const DAILY_REWARD_DIRTY_TASKS = new Set([
   'BOTTLE_CLAIM',
   'BLACK_MARKET'
 ]);
+const SENSITIVE_TASK_TYPES = new Set(['HANGUP_ADD_TIME', 'LEGACY_CLAIM']);
 
 function isRetryableWsError(error) {
   const message = String(error?.message || error || '');
@@ -250,7 +258,16 @@ function resolveWsUrl(wsUrl, token) {
 
 function shouldIgnoreFailure(error) {
   const message = String(error?.message || '');
-  return message.includes('模块未开启');
+  return [
+    '模块未开启',
+    '活动未开放',
+    '不在开启时间内',
+    '出了点小问题',
+    '扫荡条件不满足',
+    '已经选择过上阵武将了',
+    '今日已领取免费奖励',
+    '今天已经签到过了',
+  ].some((keyword) => message.includes(keyword));
 }
 
 export async function initBatchScheduler() {
@@ -304,6 +321,13 @@ export function scheduleBatchTask(task) {
   try {
     const job = cron.schedule(cronExpression, async () => {
       try {
+        await waitForScheduledTaskStagger({
+          scope: 'batch',
+          taskId,
+          taskName: task.name || null,
+          taskType: 'BATCH',
+          cronExpression,
+        });
         await executeBatchTask(task);
       } finally {
         const nextRunAt = calculateNextRunAt(cronExpression);
@@ -504,28 +528,85 @@ async function executeTaskForAccount(batchTaskId, account, taskType, tokenCandid
     importMethod: account.import_method || null,
     updatedAt: account.updated_at || null,
   });
-  let result;
-  try {
-    result = await runTaskByType(client, taskType, {});
-  } catch (error) {
-    if (isRetryableWsError(error)) {
+  const execution = await executeTaskWithFlowControl({
+    accountId: account.id,
+    accountName: account.name,
+    taskType,
+    taskConfig: {},
+    client,
+    source: 'batch',
+    reconnect: async () => {
       console.warn(`🔁 批量任务检测到连接已断开，重连后重试: ${account.name} - ${taskType}`);
       activeConnections.delete(account.id);
       client.disconnect();
-      client = await ensureBatchClient(account, tokenCandidates, roleId, wsUrl, {
+      return await ensureBatchClient(account, tokenCandidates, roleId, wsUrl, {
         importMethod: account.import_method || null,
         updatedAt: account.updated_at || null,
       });
-      result = await runTaskByType(client, taskType, {});
-    } else {
-      throw error;
-    }
-  }
+    },
+  });
+  client = execution.client;
+  const result = execution.result;
   await claimDailyPointRewardsByTask(client, taskType, {});
   
   addBatchTaskLogEntry(batchTaskId, account.id, taskType, 'success', result.message || '执行成功', JSON.stringify(result.data || {}));
   
   return result;
+}
+
+async function executeTaskWithFlowControl({
+  accountId,
+  accountName,
+  taskType,
+  taskConfig,
+  client,
+  source,
+  reconnect,
+}) {
+  const retryConfig = getSensitiveTaskRetryConfig();
+  const allowTooFastRetry = SENSITIVE_TASK_TYPES.has(taskType);
+  let currentClient = client;
+  let wsRetried = false;
+  let tooFastRetryCount = 0;
+
+  while (true) {
+    try {
+      const result = await runTaskTypeThrottled(taskType, {
+        accountId,
+        accountName,
+        source,
+      }, async () => await runTaskByType(currentClient, taskType, taskConfig));
+      return { client: currentClient, result };
+    } catch (error) {
+      if (isRetryableWsError(error) && !wsRetried) {
+        wsRetried = true;
+        currentClient = await reconnect();
+        continue;
+      }
+
+      if (allowTooFastRetry && isTooFastError(error) && tooFastRetryCount < retryConfig.maxRetries) {
+        tooFastRetryCount += 1;
+        const retryDelayMs = Math.min(
+          retryConfig.maxDelayMs,
+          retryConfig.baseDelayMs * (2 ** (tooFastRetryCount - 1))
+        );
+        console.warn('⏳ 批量敏感任务触发操作过快，退避后重试', {
+          accountId,
+          accountName,
+          taskType,
+          source,
+          retry: tooFastRetryCount,
+          maxRetries: retryConfig.maxRetries,
+          retryDelayMs,
+          error: normalizeErrorMessage(error),
+        });
+        await sleep(retryDelayMs);
+        continue;
+      }
+
+      throw error;
+    }
+  }
 }
 
 async function ensureBatchClient(account, tokenCandidates, roleId = null, wsUrl = '', extraContext = {}) {

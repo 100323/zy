@@ -23,6 +23,7 @@ import {
   isAccountTaskRunning,
   registerAccountClient,
   unregisterAccountClient,
+  runTaskTypeThrottled,
 } from '../utils/accountTaskCoordinator.js';
 import { getUserAvailabilityStatus } from '../utils/userAccess.js';
 import {
@@ -32,6 +33,12 @@ import {
 } from '../utils/wsDiagnostics.js';
 import { warmupGameClient } from '../utils/wsWarmup.js';
 import { getRefreshedTokenSessionFromStoredBin } from '../utils/accountTokenRefresh.js';
+import {
+  getSensitiveTaskRetryConfig,
+  isTooFastError,
+  sleep,
+  waitForScheduledTaskStagger,
+} from '../utils/taskExecutionControl.js';
 
 const activeConnections = new Map();
 const scheduledJobs = new Map();
@@ -64,6 +71,7 @@ const DAILY_REWARD_DIRTY_TASKS = new Set([
   'BOTTLE_CLAIM',
   'BLACK_MARKET'
 ]);
+const SENSITIVE_TASK_TYPES = new Set(['HANGUP_ADD_TIME', 'LEGACY_CLAIM']);
 
 function buildWsTokenPayload(token) {
   const raw = typeof token === 'string' ? token.trim() : '';
@@ -124,7 +132,16 @@ function resolveWsUrl(wsUrl, token) {
 
 function shouldIgnoreFailure(error) {
   const message = String(error?.message || '');
-  return message.includes('模块未开启');
+  return [
+    '模块未开启',
+    '活动未开放',
+    '不在开启时间内',
+    '出了点小问题',
+    '扫荡条件不满足',
+    '已经选择过上阵武将了',
+    '今日已领取免费奖励',
+    '今天已经签到过了',
+  ].some((keyword) => message.includes(keyword));
 }
 
 function isRetryableWsError(error) {
@@ -309,6 +326,14 @@ export function scheduleTask(task) {
     const cronExpression = task.cron_expression;
     const job = cron.schedule(cronExpression, async () => {
       try {
+        await waitForScheduledTaskStagger({
+          scope: 'scheduler',
+          taskId: task.id ?? null,
+          accountId: task.account_id ?? null,
+          accountName: task.account_name || task.name || null,
+          taskType: task.task_type || null,
+          cronExpression,
+        });
         await executeTask(task);
       } finally {
         updateTaskRunTime(task.id, calculateNextRunAt(cronExpression));
@@ -403,22 +428,24 @@ export async function executeTask(task) {
         importMethod: account_import_method || null,
         updatedAt: account_updated_at || null,
       });
-      let result;
-      try {
-        result = await runTaskByType(client, task_type, taskConfig);
-      } catch (error) {
-        if (isRetryableWsError(error)) {
+      const execution = await executeTaskWithFlowControl({
+        accountId,
+        accountName,
+        taskType: task_type,
+        taskConfig,
+        client,
+        source: 'scheduler',
+        reconnect: async () => {
           console.warn(`🔁 检测到连接已断开，重连后重试: ${accountName} - ${task_type}`);
           forceDisconnectClient(accountId);
-          client = await ensureConnectedClient(accountId, accountName, tokenCandidates, tokenMeta.roleId, taskWsUrl, {
+          return await ensureConnectedClient(accountId, accountName, tokenCandidates, tokenMeta.roleId, taskWsUrl, {
             importMethod: account_import_method || null,
             updatedAt: account_updated_at || null,
           });
-          result = await runTaskByType(client, task_type, taskConfig);
-        } else {
-          throw error;
-        }
-      }
+        },
+      });
+      client = execution.client;
+      const result = execution.result;
 
       await claimDailyPointRewardsByTask(client, task_type, taskConfig);
       updateDailyRewardFlushAfterTask(accountId, {
@@ -453,6 +480,61 @@ export async function executeTask(task) {
       throw error;
     }
   });
+}
+
+async function executeTaskWithFlowControl({
+  accountId,
+  accountName,
+  taskType,
+  taskConfig,
+  client,
+  source,
+  reconnect,
+}) {
+  const retryConfig = getSensitiveTaskRetryConfig();
+  const allowTooFastRetry = SENSITIVE_TASK_TYPES.has(taskType);
+  let currentClient = client;
+  let wsRetried = false;
+  let tooFastRetryCount = 0;
+
+  while (true) {
+    try {
+      const result = await runTaskTypeThrottled(taskType, {
+        accountId,
+        accountName,
+        source,
+      }, async () => await runTaskByType(currentClient, taskType, taskConfig));
+      return { client: currentClient, result };
+    } catch (error) {
+      if (isRetryableWsError(error) && !wsRetried) {
+        wsRetried = true;
+        currentClient = await reconnect();
+        continue;
+      }
+
+      if (allowTooFastRetry && isTooFastError(error) && tooFastRetryCount < retryConfig.maxRetries) {
+        tooFastRetryCount += 1;
+        const retryDelayMs = Math.min(
+          retryConfig.maxDelayMs,
+          retryConfig.baseDelayMs * (2 ** (tooFastRetryCount - 1))
+        );
+        console.warn('⏳ 敏感任务触发操作过快，退避后重试', {
+          accountId,
+          accountName,
+          taskType,
+          source,
+          retry: tooFastRetryCount,
+          maxRetries: retryConfig.maxRetries,
+          retryDelayMs,
+          error: normalizeErrorMessage(error),
+        });
+        await sleep(retryDelayMs);
+        continue;
+      }
+
+      throw error;
+    }
+  }
 }
 
 async function claimDailyPointRewardsByTask(client, taskType, taskConfig = {}) {
