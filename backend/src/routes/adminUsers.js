@@ -110,6 +110,141 @@ router.get('/', (req, res) => {
   }
 });
 
+router.get('/:id/accounts', (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = get('SELECT id, username FROM users WHERE id = ?', [id]);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: '用户不存在'
+      });
+    }
+
+    const accounts = all(
+      `SELECT id, name, server, status, created_at, updated_at, last_used_at
+       FROM game_accounts
+       WHERE user_id = ?
+       ORDER BY datetime(created_at) DESC, id DESC`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        user: {
+          id: Number(user.id),
+          username: user.username
+        },
+        accounts
+      }
+    });
+  } catch (error) {
+    console.error('获取用户游戏账号列表错误:', error);
+    res.status(500).json({
+      success: false,
+      error: '获取用户游戏账号列表失败'
+    });
+  }
+});
+
+router.get('/:id/logs', (req, res) => {
+  try {
+    const { id } = req.params;
+    const { accountId, taskType, status, limit = 30, offset = 0 } = req.query;
+    const user = get('SELECT id, username FROM users WHERE id = ?', [id]);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: '用户不存在'
+      });
+    }
+
+    let sql = `
+      SELECT tl.*, ga.name AS account_name
+      FROM task_logs tl
+      JOIN game_accounts ga ON tl.account_id = ga.id
+      WHERE ga.user_id = ?
+    `;
+    const params = [id];
+
+    if (accountId) {
+      const account = get(
+        'SELECT id FROM game_accounts WHERE id = ? AND user_id = ?',
+        [accountId, id]
+      );
+      if (!account) {
+        return res.status(404).json({
+          success: false,
+          error: '游戏账号不存在'
+        });
+      }
+      sql += ' AND tl.account_id = ?';
+      params.push(accountId);
+    }
+
+    if (taskType) {
+      sql += ' AND tl.task_type = ?';
+      params.push(taskType);
+    }
+
+    if (status) {
+      sql += ' AND tl.status = ?';
+      params.push(status);
+    }
+
+    sql += ' ORDER BY datetime(tl.created_at) DESC, tl.id DESC LIMIT ? OFFSET ?';
+    params.push(parseInt(limit, 10), parseInt(offset, 10));
+
+    const logs = all(sql, params);
+
+    let countSql = `
+      SELECT COUNT(*) AS total
+      FROM task_logs tl
+      JOIN game_accounts ga ON tl.account_id = ga.id
+      WHERE ga.user_id = ?
+    `;
+    const countParams = [id];
+
+    if (accountId) {
+      countSql += ' AND tl.account_id = ?';
+      countParams.push(accountId);
+    }
+
+    if (taskType) {
+      countSql += ' AND tl.task_type = ?';
+      countParams.push(taskType);
+    }
+
+    if (status) {
+      countSql += ' AND tl.status = ?';
+      countParams.push(status);
+    }
+
+    const countResult = get(countSql, countParams);
+
+    res.json({
+      success: true,
+      data: {
+        user: {
+          id: Number(user.id),
+          username: user.username
+        },
+        logs
+      },
+      total: Number(countResult?.total || 0)
+    });
+  } catch (error) {
+    console.error('获取用户日志错误:', error);
+    res.status(500).json({
+      success: false,
+      error: '获取用户日志失败'
+    });
+  }
+});
+
 router.post('/', (req, res) => {
   try {
     const username = String(req.body.username || '').trim();

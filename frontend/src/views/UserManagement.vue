@@ -47,8 +47,9 @@
             {{ formatTime(row.created_at) || '-' }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
+            <el-button link type="primary" @click="openLogDialog(row)">查看日志</el-button>
             <el-button link type="primary" @click="openEditDialog(row)">编辑</el-button>
             <el-button
               link
@@ -142,6 +143,82 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="logDialogVisible"
+      width="760px"
+      destroy-on-close
+      class="user-log-dialog"
+      :title="logDialogTitle"
+    >
+      <div class="log-filter-bar">
+        <span class="log-filter-label">游戏账号</span>
+        <el-select
+          v-model="selectedLogAccountId"
+          class="log-account-select"
+          placeholder="请选择游戏账号"
+          filterable
+          clearable
+          :loading="logAccountsLoading"
+          @change="handleLogAccountChange"
+        >
+          <el-option
+            v-for="account in logAccounts"
+            :key="account.id"
+            :label="account.name"
+            :value="account.id"
+          />
+        </el-select>
+        <el-button :loading="logLoading" @click="refreshUserLogs">刷新</el-button>
+      </div>
+
+      <el-skeleton v-if="logLoading && !userLogs.length" :rows="6" animated />
+
+      <template v-else>
+        <el-empty
+          v-if="!logAccountsLoading && logAccounts.length === 0"
+          description="该用户暂无游戏账号"
+        />
+
+        <el-empty
+          v-else-if="!selectedLogAccountId"
+          description="请选择要查看日志的游戏账号"
+        />
+
+        <el-empty
+          v-else-if="userLogs.length === 0"
+          description="当前账号暂无执行记录"
+        />
+
+        <div v-else class="log-list-wrap">
+          <div class="account-summary">
+            <span class="account-name">{{ currentLogAccountName }}</span>
+            <span class="log-count">当前显示最近 {{ userLogs.length }} 条记录</span>
+          </div>
+
+          <div class="log-items">
+            <div
+              v-for="log in userLogs"
+              :key="log.id"
+              class="log-item"
+            >
+              <div class="log-item-header">
+                <div class="log-left">
+                  <el-tag size="small" :type="getLogStatusType(log)">
+                    {{ getLogStatusText(log) }}
+                  </el-tag>
+                  <span class="log-time">{{ formatLogTime(log.created_at) }}</span>
+                </div>
+                <div class="log-right">
+                  <span class="task-type">{{ getTaskLabel(log.task_type) }}</span>
+                </div>
+              </div>
+              <div class="log-message">{{ log.message || '-' }}</div>
+            </div>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -159,6 +236,23 @@ const isEditing = ref(false);
 const editingId = ref(null);
 const users = ref([]);
 const formRef = ref();
+const taskTypeNameMap = ref({});
+const logDialogVisible = ref(false);
+const logAccountsLoading = ref(false);
+const logLoading = ref(false);
+const selectedLogUser = ref(null);
+const logAccounts = ref([]);
+const selectedLogAccountId = ref(null);
+const userLogs = ref([]);
+const BENIGN_LOG_KEYWORDS = [
+  '活动未开放',
+  '不在开启时间内',
+  '出了点小问题',
+  '扫荡条件不满足',
+  '已经选择过上阵武将了',
+  '今日已领取免费奖励',
+  '今天已经签到过了',
+];
 
 const createEmptyForm = () => ({
   username: '',
@@ -208,6 +302,14 @@ const rules = {
 };
 
 const currentUserId = computed(() => Number(authStore.user?.id || 0));
+const currentLogAccountName = computed(() => {
+  const current = logAccounts.value.find((item) => item.id === selectedLogAccountId.value);
+  return current?.name || '未选择账号';
+});
+const logDialogTitle = computed(() => {
+  const username = selectedLogUser.value?.username || '';
+  return username ? `查看日志 - ${username}` : '查看日志';
+});
 
 const resetForm = () => {
   Object.assign(form, createEmptyForm());
@@ -241,6 +343,42 @@ const formatTime = (value) => {
   return date.toLocaleString('zh-CN', { hour12: false });
 };
 
+const formatLogTime = (value) => {
+  if (!value) return '-';
+  const text = String(value).trim();
+  const normalized = text.includes('T') ? text : text.replace(' ', 'T');
+  const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(normalized);
+  const date = new Date(hasTimezone ? normalized : `${normalized}Z`);
+  if (Number.isNaN(date.getTime())) return text;
+  return date.toLocaleString('zh-CN');
+};
+
+const getTaskLabel = (taskType) => taskTypeNameMap.value[taskType] || taskType || '-';
+
+const isBenignLog = (log) => {
+  const text = `${log?.message || ''} ${log?.details || ''}`;
+  return BENIGN_LOG_KEYWORDS.some((keyword) => text.includes(keyword));
+};
+
+const getDisplayStatus = (log) => {
+  if (isBenignLog(log)) return 'ignored';
+  return log?.status || 'error';
+};
+
+const getLogStatusType = (log) => {
+  const status = getDisplayStatus(log);
+  if (status === 'success') return 'success';
+  if (status === 'ignored') return 'info';
+  return 'danger';
+};
+
+const getLogStatusText = (log) => {
+  const status = getDisplayStatus(log);
+  if (status === 'success') return '成功';
+  if (status === 'ignored') return '已忽略';
+  return '失败';
+};
+
 const getUserStatusText = (row) => {
   if (!row.is_enabled) return '已禁用';
   const now = Date.now();
@@ -269,6 +407,95 @@ const fetchUsers = async () => {
   } finally {
     loading.value = false;
   }
+};
+
+const fetchTaskTypes = async () => {
+  try {
+    const res = await api.get('/tasks/types');
+    if (res.success && Array.isArray(res.data)) {
+      taskTypeNameMap.value = res.data.reduce((acc, item) => {
+        const type = String(item?.type || '').trim();
+        if (type) acc[type] = item?.name || type;
+        return acc;
+      }, {});
+    }
+  } catch (error) {
+    console.error('获取任务类型失败:', error);
+  }
+};
+
+const fetchUserAccounts = async (userId) => {
+  logAccountsLoading.value = true;
+  try {
+    const res = await api.get(`/admin/users/${userId}/accounts`);
+    if (res.success) {
+      logAccounts.value = Array.isArray(res.data?.accounts) ? res.data.accounts : [];
+      if (!selectedLogAccountId.value && logAccounts.value.length > 0) {
+        selectedLogAccountId.value = logAccounts.value[0].id;
+      } else if (
+        selectedLogAccountId.value &&
+        !logAccounts.value.some((account) => account.id === selectedLogAccountId.value)
+      ) {
+        selectedLogAccountId.value = logAccounts.value[0]?.id || null;
+      }
+    } else {
+      logAccounts.value = [];
+      selectedLogAccountId.value = null;
+    }
+  } catch (error) {
+    logAccounts.value = [];
+    selectedLogAccountId.value = null;
+    ElMessage.error(error.response?.data?.error || '获取游戏账号失败');
+  } finally {
+    logAccountsLoading.value = false;
+  }
+};
+
+const fetchUserLogs = async () => {
+  if (!selectedLogUser.value?.id || !selectedLogAccountId.value) {
+    userLogs.value = [];
+    return;
+  }
+
+  logLoading.value = true;
+  try {
+    const res = await api.get(`/admin/users/${selectedLogUser.value.id}/logs`, {
+      params: {
+        accountId: selectedLogAccountId.value,
+        limit: 30,
+      },
+    });
+    if (res.success) {
+      userLogs.value = Array.isArray(res.data?.logs) ? res.data.logs : [];
+    } else {
+      userLogs.value = [];
+    }
+  } catch (error) {
+    userLogs.value = [];
+    ElMessage.error(error.response?.data?.error || '获取日志失败');
+  } finally {
+    logLoading.value = false;
+  }
+};
+
+const openLogDialog = async (row) => {
+  selectedLogUser.value = row;
+  logDialogVisible.value = true;
+  selectedLogAccountId.value = null;
+  logAccounts.value = [];
+  userLogs.value = [];
+  await fetchUserAccounts(row.id);
+  await fetchUserLogs();
+};
+
+const handleLogAccountChange = () => {
+  fetchUserLogs();
+};
+
+const refreshUserLogs = async () => {
+  if (!selectedLogUser.value?.id) return;
+  await fetchUserAccounts(selectedLogUser.value.id);
+  await fetchUserLogs();
 };
 
 const openCreateDialog = () => {
@@ -380,6 +607,7 @@ const deleteUser = async (row) => {
 };
 
 onMounted(() => {
+  fetchTaskTypes();
   fetchUsers();
 });
 </script>
@@ -393,6 +621,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
 }
 
 .time-window {
@@ -415,5 +644,99 @@ onMounted(() => {
 
 .limit-setting-text {
   color: #606266;
+}
+
+.log-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.log-filter-label {
+  flex-shrink: 0;
+  color: #606266;
+}
+
+.log-account-select {
+  flex: 1;
+}
+
+.account-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  color: #606266;
+}
+
+.account-name {
+  font-weight: 600;
+  color: #303133;
+}
+
+.log-count {
+  font-size: 12px;
+  color: #909399;
+}
+
+.log-items {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.log-item {
+  padding: 12px 14px;
+  border: 1px solid #ebeef5;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.log-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.log-left,
+.log-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-time {
+  font-size: 12px;
+  color: #909399;
+}
+
+.task-type {
+  font-weight: 500;
+  color: #606266;
+}
+
+.log-message {
+  line-height: 1.6;
+  color: #303133;
+  word-break: break-word;
+}
+
+@media (max-width: 768px) {
+  .user-management-page {
+    padding: 12px;
+  }
+
+  .log-filter-bar,
+  .account-summary,
+  .log-item-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 </style>
