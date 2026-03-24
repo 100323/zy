@@ -1,35 +1,29 @@
 <template>
   <div class="wx-qrcode-import">
-    <!-- 微信登录流程说明 -->
     <div class="login-flow-info">
       <h3>微信扫码登录流程</h3>
       <ol class="flow-steps">
         <li>点击下方按钮获取微信登录二维码</li>
         <li>使用微信扫码并确认登录</li>
-        <li>
-          系统将获取<strong color="red">该微信下所有角色</strong>的Token信息
-        </li>
+        <li>扫码成功后会拉取该微信下的角色列表</li>
+        <li>在列表里点击“添加”即可直接加入账号管理</li>
       </ol>
     </div>
 
-    <!-- 二维码显示区域 -->
     <div class="qrcode-container">
       <div v-if="!qrcodeUrl" id="qr-placeholder" class="qr-placeholder" @click="generateQRCode">
         <n-icon size="48" color="var(--text-tertiary)">
           <Scan />
-          <!-- 使用扫码图标 -->
         </n-icon>
         <p>点击获取微信登录二维码</p>
       </div>
       <img v-else id="qr-image" :src="qrcodeUrl" alt="微信登录二维码" class="qr-image" />
 
-      <!-- 状态信息 -->
       <div id="qr-status" class="qr-status" :class="statusType">
         {{ statusMessage }}
       </div>
     </div>
 
-    <!-- 操作按钮 -->
     <div class="form-actions">
       <n-button type="primary" block @click="generateQRCode" :loading="isProcessing">
         <template #icon>
@@ -38,51 +32,6 @@
           </n-icon>
         </template>
         {{ qrcodeUrl ? "刷新二维码" : "获取二维码" }}
-      </n-button>
-    </div>
-
-    <!-- 角色命名格式配置 -->
-    <n-form :model="importForm" label-placement="top" :show-label="true" style="margin-top: 16px;">
-      <n-form-item label="角色命名格式" :show-label="true">
-        <n-input v-model:value="importForm.nameTemplate" placeholder="{name}-{index}-{id}" />
-        <template #feedback>
-          支持变量: {name}角色名, {id}角色ID, {index}角色序号, {server}区服
-        </template>
-      </n-form-item>
-    </n-form>
-
-    <!-- 服务器角色列表 -->
-    <n-card v-if="serverListData && serverListData.length > 0" title="服务器角色列表"
-      style="margin-top: 16px; margin-bottom: 16px;">
-      <n-data-table :columns="columns" :data="serverListData" :pagination="{ pageSize: 5 }" :scroll-x="600" />
-    </n-card>
-
-    <a-list>
-      <a-list-item v-for="(role, index) in roleList" :key="index">
-        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%">
-          <div>
-            <strong>角色名称:</strong> {{ role.name || "未命名角色" }}<br />
-            <strong>Token:</strong>
-            <span style="word-break: break-all">{{ role.token }}</span><br />
-            <strong>服务器:</strong> {{ role.server || "未指定" }}<br />
-            <strong>角色序号:</strong> {{ role.roleIndex }}
-          </div>
-          <n-button type="error" size="small" @click="removeRole(index)">
-            删除
-          </n-button>
-        </div>
-      </a-list-item>
-    </a-list>
-
-    <!-- 操作按钮 -->
-    <div class="form-actions">
-      <n-button type="primary" size="large" block :loading="isImporting" @click="handleImport">
-        <template #icon>
-          <n-icon>
-            <CloudUpload />
-          </n-icon>
-        </template>
-        添加Token
       </n-button>
 
       <n-button block @click="$emit('cancel')" :disabled="isProcessing">
@@ -94,38 +43,38 @@
         取消
       </n-button>
     </div>
+
+    <n-card
+      v-if="serverListData && serverListData.length > 0"
+      title="服务器角色列表"
+      class="role-list-card"
+    >
+      <template #header-extra>
+        <span class="role-list-tip">点击“添加”直接加入账号管理</span>
+      </template>
+      <n-data-table :columns="columns" :data="serverListData" :pagination="{ pageSize: 5 }" :scroll-x="600" />
+    </n-card>
   </div>
 </template>
 
 <script lang="ts" setup>
-import { ref, onMounted, onUnmounted, reactive, h } from "vue";
-import { Scan, Refresh, Close, CloudUpload } from "@vicons/ionicons5";
-import { NIcon, useMessage, NCard, NDataTable, NButton, NForm, NFormItem, NInput } from "naive-ui";
+import { computed, ref, onMounted, onUnmounted, h } from "vue";
+import { Scan, Refresh, Close } from "@vicons/ionicons5";
+import { NIcon, useMessage, NCard, NDataTable, NButton } from "naive-ui";
 import { getTokenId, transformToken, getServerList } from "@/utils/token";
 import useIndexedDB from "@/hooks/useIndexedDB";
 import { g_utils } from "@/utils/bonProtocol";
 import { formatPower } from "@/utils/legionWar";
 import { useTokenStore } from "@/stores/tokenStore";
+import { useAuthStore } from "@stores/auth";
 const tokenStore = useTokenStore();
+const authStore = useAuthStore();
 const { storeArrayBuffer } = useIndexedDB();
 
 const message = useMessage();
-const isImporting = ref(false);
-const importForm = reactive({
-  name: "",
-  server: "",
-  wsUrl: "",
-  nameTemplate: "{name}-{index}-{id}",
-});
 
-// 定义事件
-const emit = defineEmits(["cancel", "ok"]);
+defineEmits(["cancel"]);
 
-const removeRole = (index: number) => {
-  roleList.value.splice(index, 1);
-};
-
-// 响应式数据
 const qrcodeUrl = ref<string | null>(null);
 const qrcodeUUID = ref<string | null>(null);
 const isProcessing = ref(false);
@@ -138,42 +87,59 @@ const timeout = 120000; // 120秒超时
 const startTime = ref<number | null>(null);
 
 const serverListData = ref<any[]>([]);
-const currentBinData = ref<ArrayBuffer | null>(null);
-const binDecodedResult = ref("");
 const originalBinData = ref<any>(null);
 let encryptionModuleLoadPromise: Promise<void> | null = null;
-const roleList = ref<
-  Array<{
-    id: string;
-    name: string;
-    roleId: string;
-    token: string;
-    server: string;
-    roleIndex?: number;
-    wsUrl: string;
-    importMethod: string;
-  }>
->([]);
+const maxGameAccounts = computed(() => {
+  const raw = authStore.user?.max_game_accounts;
+  return raw === null || raw === undefined || raw === "" ? null : Number(raw);
+});
+const accountLimitReached = computed(() => {
+  return maxGameAccounts.value !== null && tokenStore.gameTokens.length >= maxGameAccounts.value;
+});
+
+const getRoleIndex = (serverId: number | string) => {
+  const sid = Number(serverId);
+  if (sid >= 2000000) return 2;
+  if (sid >= 1000000) return 1;
+  return 0;
+};
+
+const getServerNum = (serverId: number | string) => {
+  let sid = Number(serverId);
+  if (sid >= 2000000) sid -= 2000000;
+  else if (sid >= 1000000) sid -= 1000000;
+  return sid - 27;
+};
+
+const buildRoleName = (roleInfo: any, roleIndex: number) => {
+  const roleName = String(roleInfo?.name || `角色_${roleInfo?.roleId || "unknown"}`).trim();
+  return `${roleName}-${roleIndex}-${roleInfo.roleId}`;
+};
+
+const hasRoleAdded = (roleInfo: any) => {
+  const roleId = String(roleInfo?.roleId || "");
+  const finalName = buildRoleName(roleInfo, getRoleIndex(roleInfo?.serverId));
+  return tokenStore.gameTokens.some((token) => {
+    if (String(token.roleId || "") === roleId && roleId) {
+      return true;
+    }
+    return String(token.name || "").trim() === finalName;
+  });
+};
 
 const columns = [
   {
-    title: "区服ID",
+    title: "区服",
     key: "serverId",
     render(row: any) {
-      let sid = Number(row.serverId);
-      if (sid >= 2000000) sid -= 2000000;
-      else if (sid >= 1000000) sid -= 1000000;
-      return sid - 27;
+      return getServerNum(row.serverId);
     },
   },
   {
     title: "角色序号",
     key: "roleIndex",
     render(row: any) {
-      const sid = Number(row.serverId);
-      if (sid >= 2000000) return 2;
-      if (sid >= 1000000) return 1;
-      return 0;
+      return getRoleIndex(row.serverId);
     },
   },
   {
@@ -196,18 +162,20 @@ const columns = [
     title: "操作",
     key: "actions",
     render(row: any) {
+      const added = hasRoleAdded(row);
       return h(
         "div",
-        { style: "display: flex; gap: 8px;" },
+        { class: "table-action-group" },
         [
           h(
             NButton,
             {
               size: "small",
-              type: "primary",
+              type: added ? "success" : "primary",
+              disabled: added || accountLimitReached.value,
               onClick: () => addSelectedRole(row),
             },
-            { default: () => "添加" },
+            { default: () => (added ? "已添加" : "添加") },
           ),
           h(
             NButton,
@@ -233,22 +201,10 @@ const handleDownload = (roleInfo: any) => {
     const newData = { ...originalBinData.value };
     newData.serverId = roleInfo.serverId; // 确保类型一致
     const newBinBuffer = g_utils.encode(newData) as ArrayBuffer;
-    
-    // 构造文件名: bin-{server}-0-{roleId}-{name}.bin
-    let sid = Number(roleInfo.serverId);
-    let roleIndex = 0;
-    
-    if (sid >= 2000000) {
-      roleIndex = 2;
-      sid -= 2000000;
-    } else if (sid >= 1000000) {
-      roleIndex = 1;
-      sid -= 1000000;
-    }
-    
-    const serverNum = sid - 27;
+    const roleIndex = getRoleIndex(roleInfo.serverId);
+    const serverNum = getServerNum(roleInfo.serverId);
     const fileName = `bin-${serverNum}服-${roleIndex}-${roleInfo.roleId}-${roleInfo.name}.bin`;
-    
+
     downloadBinFile(fileName, newBinBuffer);
     message.success(`已开始下载: ${fileName}`);
   } catch (e: any) {
@@ -262,6 +218,14 @@ const addSelectedRole = async (roleInfo: any) => {
     message.error("Bin数据丢失，请重新上传");
     return;
   }
+  if (accountLimitReached.value) {
+    message.warning(`当前账号最多只能添加 ${maxGameAccounts.value} 个游戏账号，已达到上限`);
+    return;
+  }
+  if (hasRoleAdded(roleInfo)) {
+    message.warning("该角色已在账号管理中");
+    return;
+  }
 
   try {
     const newData = { ...originalBinData.value };
@@ -269,43 +233,17 @@ const addSelectedRole = async (roleInfo: any) => {
     const newBinBuffer = g_utils.encode(newData) as ArrayBuffer;
     const tokenId = getTokenId(newBinBuffer);
     const roleToken = await transformToken(newBinBuffer);
-    const roleName = roleInfo.name || `角色_${roleInfo.roleId}`;
 
-    // 刷新indexDB数据库token数据 (保存原始bin)
     const saved = await storeArrayBuffer(tokenId, newBinBuffer);
     if (!saved) {
       throw new Error("保存BIN数据到IndexedDB失败，请检查浏览器存储空间或权限");
     }
 
-    let sid = Number(roleInfo.serverId);
-    let roleIndex = 0;
-    if (sid >= 2000000) {
-      roleIndex = 2;
-      sid -= 2000000;
-    } else if (sid >= 1000000) {
-      roleIndex = 1;
-      sid -= 1000000;
-    }
-    const serverNum = sid - 27;
+    const roleIndex = getRoleIndex(roleInfo.serverId);
+    const serverNum = getServerNum(roleInfo.serverId);
+    const finalName = buildRoleName(roleInfo, roleIndex);
 
-    const template = importForm.nameTemplate || "{name}-{index}-{id}";
-    const finalName = template
-      .replace(/{name}/g, () => roleName)
-      .replace(/{index}/g, () => String(roleIndex))
-      .replace(/{id}/g, () => String(roleInfo.roleId))
-      .replace(/{server}/g, () => String(serverNum) + "服");
-
-    // 检查是否已存在相同配置 (根据角色名称和roleId)
-    const exists = roleList.value.some(
-      (r) => r.roleId === roleInfo.roleId && r.name === finalName
-    );
-
-    if (exists) {
-      message.warning(`角色 ${finalName} 已在待添加列表中`);
-      return;
-    }
-
-    roleList.value.push({
+    tokenStore.addToken({
       id: tokenId,
       storageKey: tokenId,
       legacyStorageKeys: [tokenId],
@@ -314,12 +252,11 @@ const addSelectedRole = async (roleInfo: any) => {
       name: finalName,
       server: String(serverNum) + "服",
       roleIndex: roleIndex,
-      wsUrl: importForm.wsUrl || "",
+      wsUrl: "",
       importMethod: "wxQrcode",
     });
 
     message.success(`已添加角色: ${finalName}`);
-
   } catch (e: any) {
     console.error("添加角色失败", e);
     message.error("添加角色失败: " + e.message);
@@ -784,13 +721,7 @@ const dealWithString = (src, key, shift) => {
  * 保存账号
  */
 const saveAccount = async (arrBuf: ArrayBuffer, nickname = "") => {
-  let name = accountName.value?.trim();
-
-  console.log("name:", name);
-
   const bin = new Uint8Array(arrBuf);
-  // console.log("bin:", bin);
-  currentBinData.value = bin.buffer;
 
   try {
     const listStr = await getServerList(bin.buffer);
@@ -818,41 +749,14 @@ const saveAccount = async (arrBuf: ArrayBuffer, nickname = "") => {
     }
 
     console.log("Bin文件解析:", binData);
-    binDecodedResult.value = JSON.stringify(binData, null, 2);
     originalBinData.value = binData;
   } catch (err: any) {
     console.error("Bin文件解析失败", err);
-    binDecodedResult.value = "Bin文件解析失败: " + (err.message || err);
+    originalBinData.value = null;
   }
 };
 
-const handleImport = async () => {
-  if (roleList.value.length === 0) {
-    message.error("请先上传bin文件！");
-    return;
-  }
-  roleList.value.forEach((role) => {
-    // tokenStore.gameTokens中发现已存在的重复名称，则移出token后重新添加
-    const gameToken = tokenStore.gameTokens.find((t) => t.id === role.id);
-    if (gameToken) {
-      console.log("移除同名token:", gameToken);
-      // tokenStore.removeToken(gameToken.id);
-      tokenStore.updateToken(gameToken.id, {
-        ...role,
-      });
-    } else {
-      tokenStore.addToken({
-        ...role,
-      });
-    }
-  });
-  console.log("当前Token列表:", tokenStore.gameTokens);
-  message.success("Token添加成功");
-  roleList.value = [];
-  emit("ok");
-};
-
-const downloadBinFile = (fileName, bin) => {
+const downloadBinFile = (fileName: string, bin: ArrayBuffer) => {
   const blob = new Blob([new Uint8Array(bin)], {
     type: "application/octet-stream",
   });
@@ -936,7 +840,10 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   gap: var(--spacing-md);
-  padding: var(--spacing-xl) 0;
+  padding: var(--spacing-xl);
+  background: var(--bg-secondary);
+  border-radius: var(--border-radius-large);
+  border: 1px solid var(--border-light);
 }
 
 .qr-placeholder {
@@ -1006,10 +913,35 @@ onUnmounted(() => {
   margin-top: var(--spacing-md);
 }
 
+.role-list-card {
+  margin-top: var(--spacing-sm);
+}
+
+.role-list-tip {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.table-action-group {
+  display: flex;
+  gap: 8px;
+}
+
 .form-actions {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-md);
-  margin-top: var(--spacing-xl);
+}
+
+@media (max-width: 768px) {
+  .qrcode-container {
+    padding: var(--spacing-lg);
+  }
+
+  .qr-placeholder,
+  .qr-image {
+    width: 180px;
+    height: 180px;
+  }
 }
 </style>

@@ -1,235 +1,174 @@
 <template>
-  <!-- 手动输入表单 -->
-  <n-form :model="importForm" :label-placement="'top'" :size="'large'" :show-label="true">
-    <n-form-item :label="'游戏角色名称'" :show-label="true">
-      <n-input v-model:value="importForm.name" placeholder="例如：主号战士" clearable />
-    </n-form-item>
-
-    <n-form-item :label="'bin文件'" :show-label="true">
-      <a-upload multiple accept="*.bin,*.dmp" @before-upload="uploadBin" draggable dropzone placeholder="粘贴Token字符串..."
-        clearable>
-        <!-- <div class="dropzone-content">
-          请点击上传或将bind文件拖拽到此处
-        </div> -->
-      </a-upload>
-    </n-form-item>
-    <a-list>
-      <a-list-item v-for="(role, index) in roleList" :key="index">
-        <div>
-          <strong>角色名称:</strong> {{ role.name || "未命名角色" }}<br />
-          <strong>Token:</strong>
-          <span style="word-break: break-all">{{ role.token }}</span><br />
-          <strong>服务器:</strong> {{ role.server || "未指定" }}
-        </div>
-      </a-list-item>
-    </a-list>
-
-    <!-- 角色详情 -->
-    <n-collapse>
-      <n-collapse-item title="角色详情 (可选)" name="optional">
-        <div class="optional-fields">
-          <n-form-item label="服务器">
-            <n-input v-model:value="importForm.server" placeholder="服务器名称" />
-          </n-form-item>
-
-          <n-form-item label="自定义连接地址">
-            <n-input v-model:value="importForm.wsUrl" placeholder="留空使用默认连接" />
-          </n-form-item>
-        </div>
-      </n-collapse-item>
-    </n-collapse>
-
-    <div class="form-actions">
-      <n-button type="primary" size="large" block :loading="isImporting" @click="handleImport">
-        <template #icon>
-          <n-icon>
-            <CloudUpload />
-          </n-icon>
-        </template>
-        添加Token
-      </n-button>
-
-      <n-button v-if="tokenStore.hasTokens" size="large" block @click="cancel">
-        取消
-      </n-button>
+  <div class="single-bin-import">
+    <div class="import-intro">
+      <h3>BIN单角色导入</h3>
+      <p>上传单角色 BIN 文件后，会直接加入账号管理，无需再点“添加Token”。</p>
     </div>
-  </n-form>
+
+    <n-form :model="importForm" label-placement="top" size="large" :show-label="true">
+      <n-form-item label="bin文件">
+        <a-upload
+          accept="*.bin,*.dmp"
+          @before-upload="uploadBin"
+          draggable
+          dropzone
+          :disabled="accountLimitReached"
+          clearable
+        />
+      </n-form-item>
+
+      <div class="form-actions">
+        <n-button v-if="tokenStore.hasTokens" size="large" block @click="cancel">
+          取消
+        </n-button>
+      </div>
+    </n-form>
+  </div>
 </template>
 
 <script lang="ts" setup>
-import { ref, reactive } from "vue";
+import { computed, reactive } from "vue";
 import { useTokenStore } from "@/stores/tokenStore";
-import { CloudUpload } from "@vicons/ionicons5";
-
-import {
-  NForm,
-  NFormItem,
-  NInput,
-  NButton,
-  NIcon,
-  NCollapse,
-  NCollapseItem,
-  useMessage,
-} from "naive-ui";
-
-import PQueue from "p-queue";
+import { useAuthStore } from "@stores/auth";
+import { NForm, NFormItem, NButton, useMessage } from "naive-ui";
 import useIndexedDB from "@/hooks/useIndexedDB";
 import { getTokenId, transformToken } from "@/utils/token";
 
-const $emit = defineEmits(["cancel", "ok"]);
+const emit = defineEmits(["cancel"]);
 
 const { storeArrayBuffer } = useIndexedDB();
+const tokenStore = useTokenStore();
+const authStore = useAuthStore();
+const message = useMessage();
+
+const importForm = reactive({});
+
+const maxGameAccounts = computed(() => {
+  const raw = authStore.user?.max_game_accounts;
+  return raw === null || raw === undefined || raw === "" ? null : Number(raw);
+});
+
+const accountLimitReached = computed(() => {
+  return maxGameAccounts.value !== null && tokenStore.gameTokens.length >= maxGameAccounts.value;
+});
 
 const cancel = () => {
-  roleList.value = [];
-  $emit("cancel");
+  emit("cancel");
 };
 
-const tokenStore = useTokenStore();
-const message = useMessage();
-const isImporting = ref(false);
-const importForm = reactive({
-  name: "",
-  server: "",
-  wsUrl: "",
-  importMethod: "",
-});
-const roleList = ref<
-  Array<{
-    id: string;
-    name: string;
-    token: string;
-    server: string;
-    wsUrl: string;
-    importMethod: string;
-  }>
->([]);
-
-const tQueue = new PQueue({ concurrency: 1, interval: 1000 });
-
-const initName = (fileName: string) => {
-  if (!fileName) return;
-  fileName = fileName.trim();
-  let binRes = fileName.match(/^bin-(.*?)服-([0-2])-([0-9]{6,12})-(.*)\.bin$/);
-  console.log(binRes);
-  if (binRes) {
-    importForm.name = `${binRes[1]}_${binRes[2]}_${binRes[4]}`;
+const parseFileMeta = (fileName: string) => {
+  const name = String(fileName || "").trim();
+  const match = name.match(/^bin-(.*?)服-([0-2])-([0-9]{6,12})-(.*)\.bin$/);
+  if (!match) {
     return {
-      server: binRes[1],
-      roleIndex: binRes[2],
-      roleId: binRes[3],
-      roleName: binRes[4],
+      server: "",
+      roleIndex: "",
+      roleId: "",
+      roleName: name.replace(/\.(bin|dmp)$/i, ""),
     };
   }
+
   return {
-    server: "",
-    roleIndex: "",
-    roleId: "",
-    roleName: importForm.name || "",
+    server: match[1],
+    roleIndex: match[2],
+    roleId: match[3],
+    roleName: match[4],
   };
 };
 
-const uploadBin = (binFile: File) => {
-  tQueue.add(async () => {
-    console.log("上传文件数据:", binFile);
-    const roleMeta = initName(binFile.name) as any;
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const userToken = e.target?.result as ArrayBuffer;
-      // console.log('转换Token:', userToken);
-      const tokenId = getTokenId(userToken);
-      const roleToken = await transformToken(userToken);
-      const roleName = roleMeta.roleName || binFile.name.split(".")?.[0] || "";
-      // 刷新indexDB数据库token数据
-      const saved = await storeArrayBuffer(tokenId, userToken);
-      if (!saved) {
-        message.error("保存BIN数据到IndexedDB失败");
-        return;
-      }
-      
-      // 上传列表中发现已存在的重复名称，提示消息
-      if (roleList.value.some((role) => role.id === tokenId)) {
-        message.error("上传列表中已存在同名角色! ");
-        return;
-      }
-      // 检查待上传的角色是否已在tokenStore中存在
-      const existingToken = tokenStore.gameTokens.find(
-        (t) => t.id === tokenId,
-      );
-      if (existingToken) {
-        message.warning(`角色"${roleName}"已存在，将更新该角色的Token`);
-      }
-      message.success("Token读取成功，请检查角色名称等信息后提交");
-      roleList.value.push({
-        id: tokenId,
-        token: roleToken,
-        name: roleName,
-        server: roleMeta.server + "" + roleMeta.roleIndex || "",
-        wsUrl: importForm.wsUrl || "",
-        importMethod: "bin",
-      });
-    };
-    reader.onerror = () => {
-      message.error("读取文件失败，请重试");
-    };
-    reader.readAsArrayBuffer(binFile);
-  });
-  return false; // 阻止自动上传
+const buildFallbackName = (meta: ReturnType<typeof parseFileMeta>, tokenId: string) => {
+  const roleName = String(meta.roleName || "未命名角色").trim();
+  if (meta.roleId) {
+    return `${roleName}-${meta.roleIndex || 0}-${meta.roleId}`;
+  }
+  return `${roleName}-${tokenId.slice(0, 6)}`;
 };
 
-const handleImport = async () => {
-  if (roleList.value.length === 0) {
-    message.error("请先上传bin文件！");
-    return;
+const uploadBin = async (binFile: File) => {
+  if (accountLimitReached.value) {
+    message.warning(`当前账号最多只能添加 ${maxGameAccounts.value} 个游戏账号，已达到上限`);
+    return false;
   }
-  roleList.value.forEach((role) => {
-    // tokenStore.gameTokens中发现已存在的重复名称，则移出token后重新添加
-    const gameToken = tokenStore.gameTokens.find((t) => t.id === role.id);
-    if (gameToken) {
-      console.log("移除同名token:", gameToken);
-      // tokenStore.removeToken(gameToken.id);
-      tokenStore.updateToken(gameToken.id, {
-        ...role,
-      });
-    } else {
-      tokenStore.addToken({
-        ...role,
-      });
+
+  const fileMeta = parseFileMeta(binFile.name);
+
+  try {
+    const userToken = await binFile.arrayBuffer();
+    const tokenId = getTokenId(userToken);
+    const roleToken = await transformToken(userToken);
+    const finalName = buildFallbackName(fileMeta, tokenId);
+
+    const exists = tokenStore.gameTokens.some((token) => {
+      if (String(token.id) === tokenId) return true;
+      if (fileMeta.roleId && String(token.roleId || "") === String(fileMeta.roleId)) return true;
+      return String(token.name || "").trim() === finalName;
+    });
+
+    if (exists) {
+      message.warning("该角色已在账号管理中");
+      return false;
     }
-  });
-  console.log("当前Token列表:", tokenStore.gameTokens);
-  message.success("Token添加成功");
-  roleList.value = [];
-  $emit("ok");
+
+    const saved = await storeArrayBuffer(tokenId, userToken);
+    if (!saved) {
+      message.error("保存BIN数据到IndexedDB失败");
+      return false;
+    }
+
+    tokenStore.addToken({
+      id: tokenId,
+      storageKey: tokenId,
+      legacyStorageKeys: [tokenId],
+      roleId: fileMeta.roleId || undefined,
+      token: roleToken,
+      name: finalName,
+      server: fileMeta.server ? `${fileMeta.server}${fileMeta.roleIndex || ""}` : "",
+      wsUrl: "",
+      importMethod: "bin",
+    });
+
+    message.success("账号添加成功");
+  } catch (error: any) {
+    console.error("单角色BIN导入失败", error);
+    message.error("导入失败: " + (error?.message || error));
+  }
+
+  return false;
 };
 </script>
 
 <style scoped lang="scss">
-.optional-fields {
+.single-bin-import {
   display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg) 0;
+}
 
-  n-form-item {
-    flex: 1;
-    min-width: 200px;
+.import-intro {
+  padding: var(--spacing-lg);
+  border-radius: var(--border-radius-large);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+
+  h3 {
+    margin: 0 0 var(--spacing-xs);
+    font-size: var(--font-size-md);
+    color: var(--text-primary);
+  }
+
+  p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    line-height: 1.6;
   }
 }
 
 .form-actions {
-  margin-top: 24px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-.dropzone-content {
-  width: 100%;
-  border: 1px dashed #fcc;
-  border-radius: 8px;
-  text-align: center;
-  color: #888;
-  padding: 40px 20px;
-  font-size: 12px;
+  margin-top: 8px;
 }
 </style>

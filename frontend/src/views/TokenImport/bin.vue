@@ -1,21 +1,31 @@
 <template>
-  <n-form :model="importForm" :label-placement="'top'" :size="'large'" :show-label="true">
-    <n-form-item :label="'bin文件'" :show-label="true">
-      <a-upload accept="*.bin,*.dmp" @before-upload="uploadBin" draggable dropzone placeholder="粘贴Token字符串..."
-        clearable>
-      </a-upload>
-    </n-form-item>
-
-    <n-card v-if="serverListData && serverListData.length > 0" title="服务器角色列表" style="margin-bottom: 16px;">
-      <n-data-table :columns="columns" :data="serverListData" :pagination="{ pageSize: 5 }" :scroll-x="600" />
-    </n-card>
-
-    <div class="form-actions">
-      <n-button v-if="tokenStore.hasTokens" size="large" block @click="cancel">
-        取消
-      </n-button>
+  <div class="bin-import">
+    <div class="import-intro">
+      <h3>BIN多角色导入</h3>
+      <p>上传多角色 BIN 后，在角色列表里点击“添加”即可直接加入账号管理。</p>
     </div>
-  </n-form>
+
+    <n-form :model="importForm" :label-placement="'top'" :size="'large'" :show-label="true">
+      <n-form-item :label="'bin文件'" :show-label="true">
+        <a-upload accept="*.bin,*.dmp" @before-upload="uploadBin" draggable dropzone placeholder="粘贴Token字符串..."
+          clearable>
+        </a-upload>
+      </n-form-item>
+
+      <n-card v-if="serverListData && serverListData.length > 0" title="服务器角色列表" class="role-list-card">
+        <template #header-extra>
+          <span class="role-list-tip">点击“添加”直接加入账号管理</span>
+        </template>
+        <n-data-table :columns="columns" :data="serverListData" :pagination="{ pageSize: 5 }" :scroll-x="600" />
+      </n-card>
+
+      <div class="form-actions">
+        <n-button v-if="tokenStore.hasTokens" size="large" block @click="cancel">
+          取消
+        </n-button>
+      </div>
+    </n-form>
+  </div>
 </template>
 
 <script lang="ts" setup>
@@ -299,6 +309,42 @@ const downloadBinFile = (fileName: string, bin: ArrayBuffer) => {
 </script>
 
 <style scoped lang="scss">
+.bin-import {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg) 0;
+}
+
+.import-intro {
+  padding: var(--spacing-lg);
+  border-radius: var(--border-radius-large);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+
+  h3 {
+    margin: 0 0 var(--spacing-xs);
+    font-size: var(--font-size-md);
+    color: var(--text-primary);
+  }
+
+  p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    line-height: 1.6;
+  }
+}
+
+.role-list-card {
+  margin-bottom: 16px;
+}
+
+.role-list-tip {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
 .form-actions {
   margin-top: 16px;
   display: flex;
