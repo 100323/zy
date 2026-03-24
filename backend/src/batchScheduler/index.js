@@ -32,6 +32,9 @@ import {
   sleep,
   waitForScheduledTaskStagger,
 } from '../utils/taskExecutionControl.js';
+import {
+  executeStudyChallenge,
+} from '../utils/studyTask.js';
 
 const scheduledBatchJobs = new Map();
 const activeConnections = new Map();
@@ -1276,94 +1279,15 @@ async function executeHangupClaim(client, config) {
 }
 
 async function executeStudy(client, config) {
-  const roleInfo = await client.getRoleInfo();
-  const study = roleInfo?.role?.study || {};
-  const maxCorrectNum = Number(study.maxCorrectNum || 0);
-  const beginTimeMs = Number(study.beginTime || 0) * 1000;
-
-  if (maxCorrectNum >= 10 && isInCurrentWeek(beginTimeMs)) {
-    return { message: '本周咸鱼大冲关已完成', data: { maxCorrectNum } };
-  }
-
-  let session = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const startResp = await client.startStudy();
-    const questionList =
-      startResp?.questionList ||
-      startResp?.questions ||
-      startResp?.questionlist ||
-      startResp?.study?.questionList ||
-      null;
-    const studyId =
-      startResp?.role?.study?.id ||
-      startResp?.study?.id ||
-      startResp?.id ||
-      study.id;
-    if (Array.isArray(questionList) && questionList.length > 0 && studyId) {
-      session = { questionList, studyId };
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 400));
-  }
-
-  if (!session) {
-    throw new Error('未获取到答题题目或学习ID');
-  }
-  const { questionList, studyId } = session;
-
-  const answerResults = [];
-  for (let i = 0; i < questionList.length; i++) {
-    const q = questionList[i];
-    const questionId = q?.id;
-    const questionText = q?.question || '';
-    if (!questionId) continue;
-
-    const answer = findAnswer(questionText) || 1;
-    try {
-      const result = await client.answerStudy(studyId, questionId, answer);
-      answerResults.push({ questionId, answer, ok: true, result });
-    } catch (error) {
-      answerResults.push({ questionId, answer, ok: false, error: error.message });
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-
-  const rewardResults = [];
-  for (let rewardId = 1; rewardId <= 10; rewardId++) {
-    try {
-      const result = await client.claimStudyReward(rewardId);
-      rewardResults.push({ rewardId, ok: true, result });
-    } catch (error) {
-      rewardResults.push({ rewardId, ok: false, error: error.message });
-    }
-    await new Promise((resolve) => setTimeout(resolve, 120));
-  }
-
-  const answered = answerResults.filter((item) => item.ok).length;
-  return {
-    message: `咸鱼大冲关完成，成功提交 ${answered}/${questionList.length} 题`,
-    data: {
-      totalQuestions: questionList.length,
-      answered,
-      answerResults,
-      rewardResults
-    }
-  };
-}
-
-function isInCurrentWeek(timestampMs) {
-  if (!timestampMs) return false;
-  const now = new Date();
-  const currentDay = now.getDay();
-  const mondayOffset = currentDay === 0 ? -6 : 1 - currentDay;
-  const weekStart = new Date(now);
-  weekStart.setDate(now.getDate() + mondayOffset);
-  weekStart.setHours(0, 0, 0, 0);
-
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekStart.getDate() + 7);
-  const ts = new Date(timestampMs);
-  return ts >= weekStart && ts < weekEnd;
+  return await executeStudyChallenge(client, {
+    maxStudyAttempts: 3,
+    logContext: {
+      accountId: client.accountId ?? null,
+      accountName: client.accountName || null,
+      source: 'batch',
+    },
+    findAnswer,
+  });
 }
 
 async function executeHangupAddTime(client, config) {

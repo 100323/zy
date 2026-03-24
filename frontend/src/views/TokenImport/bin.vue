@@ -1,55 +1,16 @@
 <template>
-  <!-- 手动输入表单 -->
   <n-form :model="importForm" :label-placement="'top'" :size="'large'" :show-label="true">
-
-
     <n-form-item :label="'bin文件'" :show-label="true">
-      <a-upload multiple accept="*.bin,*.dmp" @before-upload="uploadBin" draggable dropzone placeholder="粘贴Token字符串..."
+      <a-upload accept="*.bin,*.dmp" @before-upload="uploadBin" draggable dropzone placeholder="粘贴Token字符串..."
         clearable>
-        <!-- <div class="dropzone-content">
-          请点击上传或将bind文件拖拽到此处
-        </div> -->
       </a-upload>
-    </n-form-item>
-
-    <n-form-item label="角色命名格式" :show-label="true">
-      <n-input v-model:value="importForm.nameTemplate" placeholder="{name}-{index}-{id}" />
-      <template #feedback>
-        支持变量: {name}角色名, {id}角色ID, {index}角色序号, {server}区服
-      </template>
     </n-form-item>
 
     <n-card v-if="serverListData && serverListData.length > 0" title="服务器角色列表" style="margin-bottom: 16px;">
       <n-data-table :columns="columns" :data="serverListData" :pagination="{ pageSize: 5 }" :scroll-x="600" />
     </n-card>
 
-    <a-list>
-      <a-list-item v-for="(role, index) in roleList" :key="index">
-        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%">
-          <div>
-            <strong>角色名称:</strong> {{ role.name || "未命名角色" }}<br />
-            <strong>Token:</strong>
-            <span style="word-break: break-all">{{ role.token }}</span><br />
-            <strong>服务器:</strong> {{ role.server || "未指定" }}<br />
-            <strong>角色序号:</strong> {{ role.roleIndex }}
-          </div>
-          <n-button type="error" size="small" @click="removeRole(index)">
-            删除
-          </n-button>
-        </div>
-      </a-list-item>
-    </a-list>
-
     <div class="form-actions">
-      <n-button type="primary" size="large" block :loading="isImporting" @click="handleImport">
-        <template #icon>
-          <n-icon>
-            <CloudUpload />
-          </n-icon>
-        </template>
-        添加Token
-      </n-button>
-
       <n-button v-if="tokenStore.hasTokens" size="large" block @click="cancel">
         取消
       </n-button>
@@ -58,18 +19,12 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, reactive, h } from "vue";
+import { computed, ref, h } from "vue";
 import { useTokenStore } from "@/stores/tokenStore";
-import { CloudUpload } from "@vicons/ionicons5";
-
 import {
   NForm,
   NFormItem,
-  NInput,
   NButton,
-  NIcon,
-  NCollapse,
-  NCollapseItem,
   useMessage,
   NCard,
   NDataTable,
@@ -80,66 +35,75 @@ import useIndexedDB from "@/hooks/useIndexedDB";
 import { getTokenId, transformToken, getServerList } from "@/utils/token";
 import { g_utils } from "@/utils/bonProtocol";
 import { formatPower } from "@/utils/legionWar";
+import { useAuthStore } from "@stores/auth";
 
-const $emit = defineEmits(["cancel", "ok"]);
+const $emit = defineEmits(["cancel"]);
 
 const { storeArrayBuffer } = useIndexedDB();
 
 const cancel = () => {
-  roleList.value = [];
+  serverListData.value = [];
+  originalBinData.value = null;
   $emit("cancel");
 };
 
-const removeRole = (index: number) => {
-  roleList.value.splice(index, 1);
+const tokenStore = useTokenStore();
+const authStore = useAuthStore();
+const message = useMessage();
+const importForm = {};
+const serverListData = ref<any[]>([]);
+const originalBinData = ref<any>(null);
+const maxGameAccounts = computed(() => {
+  const raw = authStore.user?.max_game_accounts;
+  return raw === null || raw === undefined || raw === "" ? null : Number(raw);
+});
+const accountLimitReached = computed(() => {
+  return maxGameAccounts.value !== null && tokenStore.gameTokens.length >= maxGameAccounts.value;
+});
+
+const getRoleIndex = (serverId: number | string) => {
+  const sid = Number(serverId);
+  if (sid >= 2000000) return 2;
+  if (sid >= 1000000) return 1;
+  return 0;
 };
 
-const tokenStore = useTokenStore();
-const message = useMessage();
-const isImporting = ref(false);
-const importForm = reactive({
-  name: "",
-  server: "",
-  wsUrl: "",
-  importMethod: "",
-  nameTemplate: "{name}-{index}-{id}",
-});
-const roleList = ref<
-  Array<{
-    id: string;
-    name: string;
-    roleId: string;
-    token: string;
-    server: string;
-    roleIndex?: number;
-    wsUrl: string;
-    importMethod: string;
-  }>
->([]);
-const serverListData = ref<any[]>([]);
-const currentBinData = ref<ArrayBuffer | null>(null);
-const binDecodedResult = ref("");
-const originalBinData = ref<any>(null);
+const getServerNum = (serverId: number | string) => {
+  let sid = Number(serverId);
+  if (sid >= 2000000) sid -= 2000000;
+  else if (sid >= 1000000) sid -= 1000000;
+  return sid - 27;
+};
+
+const hasRoleAdded = (roleInfo: any) => {
+  const roleId = String(roleInfo?.roleId || "");
+  const finalName = buildRoleName(roleInfo, getRoleIndex(roleInfo?.serverId));
+  return tokenStore.gameTokens.some((token) => {
+    if (String(token.roleId || "") === roleId && roleId) {
+      return true;
+    }
+    return String(token.name || "").trim() === finalName;
+  });
+};
+
+const buildRoleName = (roleInfo: any, roleIndex: number) => {
+  const roleName = String(roleInfo?.name || `角色_${roleInfo?.roleId || "unknown"}`).trim();
+  return `${roleName}-${roleIndex}-${roleInfo.roleId}`;
+};
 
 const columns = [
   {
     title: "区服",
     key: "serverId",
     render(row: any) {
-      let sid = Number(row.serverId);
-      if (sid >= 2000000) sid -= 2000000;
-      else if (sid >= 1000000) sid -= 1000000;
-      return sid - 27;
+      return getServerNum(row.serverId);
     },
   },
   {
     title: "角色序号",
     key: "roleIndex",
     render(row: any) {
-      const sid = Number(row.serverId);
-      if (sid >= 2000000) return 2;
-      if (sid >= 1000000) return 1;
-      return 0;
+      return getRoleIndex(row.serverId);
     },
   },
   {
@@ -162,6 +126,7 @@ const columns = [
     title: "操作",
     key: "actions",
     render(row: any) {
+      const added = hasRoleAdded(row);
       return h(
         "div",
         { style: "display: flex; gap: 8px;" },
@@ -170,10 +135,11 @@ const columns = [
             NButton,
             {
               size: "small",
-              type: "primary",
+              type: added ? "success" : "primary",
+              disabled: added || accountLimitReached.value,
               onClick: () => addSelectedRole(row),
             },
-            { default: () => "添加" },
+            { default: () => (added ? "已添加" : "添加") },
           ),
           h(
             NButton,
@@ -192,28 +158,6 @@ const columns = [
 
 const tQueue = new PQueue({ concurrency: 1, interval: 1000 });
 
-const initName = (fileName: string) => {
-  if (!fileName) return;
-  fileName = fileName.trim();
-  let binRes = fileName.match(/^bin-(.*?)服-([0-2])-([0-9]{6,12})-(.*)\.bin$/);
-  console.log(binRes);
-  if (binRes) {
-    importForm.name = `${binRes[1]}_${binRes[2]}_${binRes[4]}`;
-    return {
-      server: binRes[1],
-      roleIndex: binRes[2],
-      roleId: binRes[3],
-      roleName: binRes[4],
-    };
-  }
-  return {
-    server: "",
-    roleIndex: "",
-    roleId: "",
-    roleName: importForm.name || "",
-  };
-};
-
 const handleDownload = (roleInfo: any) => {
   if (!originalBinData.value) {
     message.error("Bin数据丢失，请重新上传");
@@ -224,19 +168,8 @@ const handleDownload = (roleInfo: any) => {
     newData.serverId = roleInfo.serverId; // 确保类型一致
     const newBinBuffer = g_utils.encode(newData) as ArrayBuffer;
     
-    // 构造文件名: bin-{server}-0-{roleId}-{name}.bin
-    let sid = Number(roleInfo.serverId);
-    let roleIndex = 0;
-    
-    if (sid >= 2000000) {
-      roleIndex = 2;
-      sid -= 2000000;
-    } else if (sid >= 1000000) {
-      roleIndex = 1;
-      sid -= 1000000;
-    }
-    
-    const serverNum = sid - 27;
+    const roleIndex = getRoleIndex(roleInfo.serverId);
+    const serverNum = getServerNum(roleInfo.serverId);
     const fileName = `bin-${serverNum}服-${roleIndex}-${roleInfo.roleId}-${roleInfo.name}.bin`;
     
     downloadBinFile(fileName, newBinBuffer);
@@ -252,6 +185,14 @@ const addSelectedRole = async (roleInfo: any) => {
     message.error("Bin数据丢失，请重新上传");
     return;
   }
+  if (accountLimitReached.value) {
+    message.warning(`当前账号最多只能添加 ${maxGameAccounts.value} 个游戏账号，已达到上限`);
+    return;
+  }
+  if (hasRoleAdded(roleInfo)) {
+    message.warning("该角色已在账号管理中");
+    return;
+  }
 
   try {
     const newData = { ...originalBinData.value };
@@ -259,7 +200,6 @@ const addSelectedRole = async (roleInfo: any) => {
     const newBinBuffer = g_utils.encode(newData) as ArrayBuffer;
     const tokenId = getTokenId(newBinBuffer);
     const roleToken = await transformToken(newBinBuffer);
-    const roleName = roleInfo.name || `角色_${roleInfo.roleId}`;
 
     // 刷新indexDB数据库token数据 (保存原始bin)
     const saved = await storeArrayBuffer(tokenId, newBinBuffer);
@@ -267,35 +207,11 @@ const addSelectedRole = async (roleInfo: any) => {
       throw new Error("保存BIN数据到IndexedDB失败，请检查浏览器存储空间或权限");
     }
 
-    let sid = Number(roleInfo.serverId);
-    let roleIndex = 0;
-    if (sid >= 2000000) {
-      roleIndex = 2;
-      sid -= 2000000;
-    } else if (sid >= 1000000) {
-      roleIndex = 1;
-      sid -= 1000000;
-    }
-    const serverNum = sid - 27;
+    const roleIndex = getRoleIndex(roleInfo.serverId);
+    const serverNum = getServerNum(roleInfo.serverId);
+    const finalName = buildRoleName(roleInfo, roleIndex);
 
-    const template = importForm.nameTemplate || "{name}-{index}-{id}";
-    const finalName = template
-      .replace(/{name}/g, () => roleName)
-      .replace(/{index}/g, () => String(roleIndex))
-      .replace(/{id}/g, () => String(roleInfo.roleId))
-      .replace(/{server}/g, () => String(serverNum) + "服");
-
-    // 检查是否已存在相同配置 (根据角色名称和roleId)
-    const exists = roleList.value.some(
-      (r) => r.roleId === roleInfo.roleId && r.name === finalName
-    );
-
-    if (exists) {
-      message.warning(`角色 ${finalName} 已在待添加列表中`);
-      return;
-    }
-
-    roleList.value.push({
+    tokenStore.addToken({
       id: tokenId,
       storageKey: tokenId,
       legacyStorageKeys: [tokenId],
@@ -304,12 +220,11 @@ const addSelectedRole = async (roleInfo: any) => {
       name: finalName,
       server: String(serverNum) + "服",
       roleIndex: roleIndex,
-      wsUrl: importForm.wsUrl || "",
+      wsUrl: "",
       importMethod: "bin",
     });
 
     message.success(`已添加角色: ${finalName}`);
-
   } catch (e: any) {
     console.error("添加角色失败", e);
     message.error("添加角色失败: " + e.message);
@@ -322,7 +237,6 @@ const uploadBin = (binFile: File) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
       const userToken = e.target?.result as ArrayBuffer;
-      currentBinData.value = userToken;
 
       // 获取服务器角色列表
       try {
@@ -352,11 +266,10 @@ const uploadBin = (binFile: File) => {
         }
 
         console.log("Bin文件解析:", binData);
-        binDecodedResult.value = JSON.stringify(binData, null, 2);
         originalBinData.value = binData;
       } catch (err: any) {
         console.error("Bin文件解析失败", err);
-        binDecodedResult.value = "Bin文件解析失败: " + (err.message || err);
+        originalBinData.value = null;
       }
     };
     reader.onerror = () => {
@@ -367,33 +280,7 @@ const uploadBin = (binFile: File) => {
   return false; // 阻止自动上传
 };
 
-const handleImport = async () => {
-  if (roleList.value.length === 0) {
-    message.error("请先上传bin文件！");
-    return;
-  }
-  roleList.value.forEach((role) => {
-    // tokenStore.gameTokens中发现已存在的重复名称，则移出token后重新添加
-    const gameToken = tokenStore.gameTokens.find((t) => t.id === role.id);
-    if (gameToken) {
-      console.log("移除同名token:", gameToken);
-      // tokenStore.removeToken(gameToken.id);
-      tokenStore.updateToken(gameToken.id, {
-        ...role,
-      });
-    } else {
-      tokenStore.addToken({
-        ...role,
-      });
-    }
-  });
-  console.log("当前Token列表:", tokenStore.gameTokens);
-  message.success("Token添加成功");
-  roleList.value = [];
-  $emit("ok");
-};
-
-const downloadBinFile = (fileName, bin) => {
+const downloadBinFile = (fileName: string, bin: ArrayBuffer) => {
   const blob = new Blob([new Uint8Array(bin)], {
     type: "application/octet-stream",
   });
@@ -412,31 +299,10 @@ const downloadBinFile = (fileName, bin) => {
 </script>
 
 <style scoped lang="scss">
-.optional-fields {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-
-  n-form-item {
-    flex: 1;
-    min-width: 200px;
-  }
-}
-
 .form-actions {
-  margin-top: 24px;
+  margin-top: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-.dropzone-content {
-  width: 100%;
-  border: 1px dashed #fcc;
-  border-radius: 8px;
-  text-align: center;
-  color: #888;
-  padding: 40px 20px;
-  font-size: 12px;
 }
 </style>
