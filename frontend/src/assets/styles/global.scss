@@ -503,19 +503,37 @@ img {
 
 // Arco Modal 移动端适配
 @media (max-width: 768px) {
+  .arco-modal-container,
+  .el-overlay-dialog {
+    box-sizing: border-box;
+    padding:
+      max(12px, env(safe-area-inset-top))
+      12px
+      max(12px, env(safe-area-inset-bottom));
+  }
+
   .arco-modal {
-    width: auto !important;
-    max-width: 95vw !important;
+    width: min(100%, 680px) !important;
+    max-width: 100% !important;
     margin: 0 auto !important;
+    max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 24px) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
   }
 
   .arco-modal-content {
-    padding: var(--spacing-sm) !important;
+    padding: 0 !important;
     border-radius: var(--border-radius-medium) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    max-height: inherit !important;
+    overflow: hidden !important;
   }
 
   .arco-modal-header {
     padding: var(--spacing-sm) var(--spacing-sm) !important;
+    flex-shrink: 0 !important;
   }
 
   .arco-modal-title {
@@ -524,8 +542,19 @@ img {
   }
 
   .arco-modal-body {
-    max-height: 70vh !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
     overflow-y: auto !important;
+    overflow-x: hidden !important;
+    -webkit-overflow-scrolling: touch;
+    padding: var(--spacing-sm) !important;
+    word-break: break-word;
+  }
+
+  .arco-modal-footer {
+    flex-shrink: 0 !important;
+    padding: var(--spacing-sm) !important;
   }
 }
 
@@ -604,9 +633,48 @@ img {
   }
 
   .n-modal {
+    width: min(100%, 680px) !important;
+    max-width: 100% !important;
+
     .n-card {
-      max-width: 95vw !important;
+      width: 100% !important;
+      max-width: 100% !important;
       margin: 0 auto !important;
+      max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 24px) !important;
+      display: flex !important;
+      flex-direction: column !important;
+      overflow: hidden !important;
+    }
+
+    .n-card > .n-card__content {
+      flex: 1 1 auto !important;
+      min-height: 0 !important;
+      overflow-y: auto !important;
+      overflow-x: hidden !important;
+      -webkit-overflow-scrolling: touch;
+      word-break: break-word;
+    }
+
+    .n-card > .n-card__header,
+    .n-card > .n-card__header-extra,
+    .n-card > .n-card__action,
+    .n-card > .n-card__footer {
+      flex-shrink: 0 !important;
+    }
+  }
+
+  .n-dialog {
+    width: min(100%, 680px) !important;
+    max-width: 100% !important;
+    max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 24px) !important;
+    overflow: hidden !important;
+
+    .n-dialog__content {
+      max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 180px) !important;
+      overflow-y: auto !important;
+      overflow-x: hidden !important;
+      -webkit-overflow-scrolling: touch;
+      word-break: break-word;
     }
   }
 
@@ -664,22 +732,47 @@ img {
 
   // 对话框适配
   .el-dialog {
-    width: 95vw !important;
-    max-width: 95vw !important;
-    margin: 5vh auto !important;
+    width: min(100%, 680px) !important;
+    max-width: 100% !important;
+    margin: 0 auto !important;
+    max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 24px) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
     
     .el-dialog__header {
       padding: var(--spacing-md) !important;
+      flex-shrink: 0 !important;
     }
     
     .el-dialog__body {
+      flex: 1 1 auto !important;
+      min-height: 0 !important;
       padding: var(--spacing-md) !important;
-      max-height: 70vh !important;
+      max-height: none !important;
       overflow-y: auto !important;
+      overflow-x: hidden !important;
+      -webkit-overflow-scrolling: touch;
+      word-break: break-word;
     }
     
     .el-dialog__footer {
       padding: var(--spacing-md) !important;
+      flex-shrink: 0 !important;
+    }
+  }
+
+  .arco-modal,
+  .n-modal .n-card,
+  .n-dialog,
+  .el-dialog {
+    .arco-input,
+    .arco-textarea,
+    .n-input__input-el,
+    .n-input__textarea-el,
+    .el-input__inner,
+    .el-textarea__inner {
+      font-size: 16px !important;
     }
   }
 
@@ -792,5 +885,9 @@ img {
     .n-card {
       max-height: 90vh !important;
     }
+  }
+
+  .n-dialog {
+    max-height: 90vh !important;
   }
 }

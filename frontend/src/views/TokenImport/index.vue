@@ -45,17 +45,19 @@
         </h2>
       </template>
       <div class="card-header">
-        <n-radio-group
-          v-model:value="importMethod"
-          class="import-method-tabs"
-          size="small"
-        >
-          <n-radio-button value="manual"> 手动输入 </n-radio-button>
-          <n-radio-button value="url"> URL获取 </n-radio-button>
-          <n-radio-button value="wxQrcode"> 微信扫码 </n-radio-button>
-          <n-radio-button value="bin"> BIN多角色 </n-radio-button>
-          <n-radio-button value="singlebin"> BIN单角色 </n-radio-button>
-        </n-radio-group>
+        <div class="import-method-grid" role="tablist" aria-label="账号导入方式">
+          <button
+            v-for="option in importMethodOptions"
+            :key="option.value"
+            type="button"
+            class="import-method-button"
+            :class="{ active: importMethod === option.value }"
+            :aria-pressed="importMethod === option.value"
+            @click="importMethod = option.value"
+          >
+            {{ option.label }}
+          </button>
+        </div>
       </div>
       <div class="card-body">
         <ManualTokenForm
@@ -252,6 +254,13 @@ const editFormRef = ref(null);
 const editingToken = ref(null);
 const importMethod = ref("manual");
 const connectingTokens = ref(new Set());
+const importMethodOptions = [
+  { value: "manual", label: "手动输入" },
+  { value: "url", label: "URL获取" },
+  { value: "wxQrcode", label: "微信扫码" },
+  { value: "bin", label: "BIN多角色" },
+  { value: "singlebin", label: "BIN单角色" },
+];
 
 const editForm = reactive({
   name: "",
@@ -880,15 +889,40 @@ onMounted(async () => {
     margin-bottom: var(--spacing-md);
   }
 
-  .import-method-tabs {
-    display: flex;
-    flex-wrap: wrap;
+  .import-method-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
     gap: var(--spacing-xs);
+  }
+
+  .import-method-button {
+    min-height: 40px;
+    padding: 8px 12px;
+    border: 1px solid var(--color-border, #dcdfe6);
+    border-radius: var(--border-radius-small);
+    background: #fff;
+    color: var(--color-text-primary, #303133);
+    font-size: var(--font-size-sm);
+    line-height: 1.4;
+    text-align: center;
+    transition: all var(--transition-fast);
+    -webkit-appearance: none;
+    appearance: none;
+    cursor: pointer;
+
+    &.active {
+      color: #fff;
+      background: var(--el-color-primary, #409eff);
+      border-color: var(--el-color-primary, #409eff);
+      box-shadow: 0 0 0 1px rgba(64, 158, 255, 0.1);
+    }
   }
 
   .card-body {
     max-height: 60vh;
     overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
   }
 }
 
@@ -898,27 +932,21 @@ onMounted(async () => {
       font-size: var(--font-size-md);
     }
 
-    .import-method-tabs {
-      .n-radio-button {
-        flex: 1;
-        min-width: calc(50% - var(--spacing-xs));
+    .import-method-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 
-        :deep(.n-radio-button__button) {
-          width: 100%;
-          padding: 6px 8px;
-          font-size: var(--font-size-xs);
-        }
-      }
+    .import-method-button {
+      min-height: 44px;
+      font-size: var(--font-size-xs);
     }
   }
 }
 
 @media (max-width: 480px) {
   .token-import-modal {
-    .import-method-tabs {
-      .n-radio-button {
-        min-width: 100%;
-      }
+    .import-method-grid {
+      grid-template-columns: 1fr;
     }
   }
 }
