@@ -60,16 +60,6 @@
         </div>
       </div>
       <div class="card-body">
-        <ManualTokenForm
-          @cancel="() => (showImportForm = false)"
-          @ok="() => (showImportForm = false)"
-          v-if="importMethod === 'manual'"
-        />
-        <UrlTokenForm
-          @cancel="() => (showImportForm = false)"
-          @ok="() => (showImportForm = false)"
-          v-if="importMethod === 'url'"
-        />
         <WxQrcodeForm
           @cancel="() => (showImportForm = false)"
           @ok="() => (showImportForm = false)"
@@ -225,8 +215,6 @@ import useIndexedDB from "@/hooks/useIndexedDB";
 import api from "@utils/api";
 import { useAuthStore } from "@stores/auth";
 
-const ManualTokenForm = defineAsyncComponent(() => import("./manual.vue"));
-const UrlTokenForm = defineAsyncComponent(() => import("./url.vue"));
 const BinTokenForm = defineAsyncComponent(() => import("./bin.vue"));
 const SingleBinTokenForm = defineAsyncComponent(() => import("./singlebin.vue"));
 const WxQrcodeForm = defineAsyncComponent(() => import("./wxqrcode.vue"));
@@ -252,11 +240,9 @@ const showImportForm = ref(false);
 const showEditModal = ref(false);
 const editFormRef = ref(null);
 const editingToken = ref(null);
-const importMethod = ref("manual");
+const importMethod = ref("wxQrcode");
 const connectingTokens = ref(new Set());
 const importMethodOptions = [
-  { value: "manual", label: "手动输入" },
-  { value: "url", label: "URL获取" },
   { value: "wxQrcode", label: "微信扫码" },
   { value: "bin", label: "BIN多角色" },
   { value: "singlebin", label: "BIN单角色" },
@@ -297,6 +283,9 @@ const openImportForm = () => {
   if (accountLimitReached.value) {
     message.warning(`当前账号最多只能添加 ${maxGameAccounts.value} 个游戏账号，已达到上限`);
     return;
+  }
+  if (!importMethodOptions.some((option) => option.value === importMethod.value)) {
+    importMethod.value = 'wxQrcode';
   }
   showImportForm.value = true;
 };
