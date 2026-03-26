@@ -5,14 +5,15 @@ import {
   markTaskRunTime,
   addTaskLog,
   ensureDefaultTaskConfigsForAllAccounts,
+  rebalanceDefaultTaskCronExpressions,
 } from '../routes/tasks.js';
-import { get } from '../database/index.js';
+import { get, all } from '../database/index.js';
 import { decrypt } from '../utils/crypto.js';
 import GameClient from '../utils/gameClient.js';
 import config from '../config/index.js';
 import { findAnswer } from '../utils/studyQuestions.js';
 import { parseTokenPayload } from '../utils/token.js';
-import { calculateNextRunAt } from '../utils/cronSchedule.js';
+import { calculateNextRunAt, parseCronField } from '../utils/cronSchedule.js';
 import {
   executeArenaScheduledTask,
   executeMailClaimScheduledTask,
@@ -75,6 +76,9 @@ const DAILY_REWARD_DIRTY_TASKS = new Set([
   'BLACK_MARKET'
 ]);
 const SENSITIVE_TASK_TYPES = new Set(['HANGUP_ADD_TIME', 'LEGACY_CLAIM']);
+const DAILY_CATCHUP_CRON = '0 19 * * *';
+const DAILY_CATCHUP_CUTOFF_HOUR = 19;
+const DEFAULT_DAILY_CATCHUP_CONCURRENCY = 2;
 
 function buildWsTokenPayload(token) {
   const raw = typeof token === 'string' ? token.trim() : '';
@@ -150,6 +154,225 @@ function shouldIgnoreFailure(error) {
 function isRetryableWsError(error) {
   const message = String(error?.message || error || '');
   return message.includes('WebSocket未连接') || message.includes('WebSocket连接已断开');
+}
+
+function getCronExecutionSlotsForToday(cronExpression, now = new Date()) {
+  const parts = String(cronExpression || '').trim().split(/\s+/);
+  if (parts.length !== 5) return [];
+
+  const [minuteField, hourField, dayOfMonthField, monthField, dayOfWeekField] = parts;
+  const minutes = parseCronField(minuteField, 0, 59);
+  const hours = parseCronField(hourField, 0, 23);
+  const daysOfMonth = parseCronField(dayOfMonthField, 1, 31);
+  const months = parseCronField(monthField, 1, 12);
+  const daysOfWeek = parseCronField(dayOfWeekField, 0, 7).map((value) => (value === 7 ? 0 : value));
+  const todayMonth = now.getMonth() + 1;
+  const todayDayOfMonth = now.getDate();
+  const todayDayOfWeek = now.getDay();
+
+  if (
+    !minutes.length ||
+    !hours.length ||
+    !daysOfMonth.length ||
+    !months.length ||
+    !daysOfWeek.length ||
+    !months.includes(todayMonth) ||
+    !daysOfMonth.includes(todayDayOfMonth) ||
+    !daysOfWeek.includes(todayDayOfWeek)
+  ) {
+    return [];
+  }
+
+  const pairs = [];
+
+  for (const hour of hours) {
+    for (const minute of minutes) {
+      pairs.push({ hour, minute });
+    }
+  }
+
+  return pairs.sort((a, b) => (a.hour - b.hour) || (a.minute - b.minute));
+}
+
+function shouldIncludeTaskInDailyCatchup(task, cutoffHour = DAILY_CATCHUP_CUTOFF_HOUR, now = new Date()) {
+  const cronExpression = String(task?.cron_expression || '').trim();
+  if (!cronExpression) return false;
+
+  const pairs = getCronExecutionSlotsForToday(cronExpression, now);
+  if (pairs.length === 0) return false;
+
+  return pairs.some(({ hour }) => hour < cutoffHour);
+}
+
+function getTodayTaskLogSnapshots() {
+  const rows = all(
+    `SELECT account_id, task_type, status, message, created_at
+       FROM task_logs
+      WHERE datetime(created_at, '+8 hours') >= date('now', '+8 hours')
+        AND datetime(created_at, '+8 hours') < datetime(date('now', '+8 hours'), '+1 day')
+      ORDER BY created_at DESC, id DESC`,
+  );
+
+  const snapshotMap = new Map();
+  for (const row of rows) {
+    const key = `${row.account_id}_${row.task_type}`;
+    if (!snapshotMap.has(key)) {
+      snapshotMap.set(key, row);
+    }
+  }
+  return snapshotMap;
+}
+
+function collectDailyCatchupTasks(tasks, cutoffHour = DAILY_CATCHUP_CUTOFF_HOUR, now = new Date()) {
+  const todayLogSnapshots = getTodayTaskLogSnapshots();
+  const missingTasks = [];
+  const failedTasks = [];
+
+  for (const task of tasks) {
+    if (!shouldIncludeTaskInDailyCatchup(task, cutoffHour, now)) {
+      continue;
+    }
+
+    const key = `${task.account_id}_${task.task_type}`;
+    const latestLog = todayLogSnapshots.get(key);
+
+    if (!latestLog) {
+      missingTasks.push({
+        ...task,
+        catchupReason: 'missing_today_log',
+      });
+      continue;
+    }
+
+    if (String(latestLog.status || '') === 'error') {
+      failedTasks.push({
+        ...task,
+        catchupReason: 'latest_error',
+        catchupLastMessage: latestLog.message || '',
+        catchupLastLogAt: latestLog.created_at || null,
+      });
+    }
+  }
+
+  return {
+    missingTasks,
+    failedTasks,
+    tasks: [...missingTasks, ...failedTasks],
+  };
+}
+
+function getDailyCatchupMaxConcurrency() {
+  const value = Number(config?.scheduler?.dailyCatchupMaxConcurrency);
+  if (Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+
+  const fallback = Number(config?.scheduler?.maxConcurrentAccounts);
+  if (Number.isFinite(fallback) && fallback > 0) {
+    return Math.floor(fallback);
+  }
+
+  return DEFAULT_DAILY_CATCHUP_CONCURRENCY;
+}
+
+async function runCatchupTask(task) {
+  await waitForScheduledTaskStagger({
+    scope: 'scheduler-catchup',
+    taskId: task.id ?? null,
+    accountId: task.account_id ?? null,
+    accountName: task.account_name || task.name || null,
+    taskType: task.task_type || null,
+    cronExpression: task.cron_expression || null,
+  });
+
+  console.log('🛟 开始补偿执行任务', {
+    accountId: task.account_id ?? null,
+    accountName: task.account_name || task.name || null,
+    taskType: task.task_type || null,
+    catchupReason: task.catchupReason,
+    lastMessage: task.catchupLastMessage || null,
+    lastLogAt: task.catchupLastLogAt || null,
+  });
+
+  try {
+    await executeTask(task);
+    return {
+      ok: true,
+      task,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      task,
+      error: error?.message || String(error),
+    };
+  }
+}
+
+export async function runDailyTaskCatchup(options = {}) {
+  const {
+    cutoffHour = DAILY_CATCHUP_CUTOFF_HOUR,
+    now = new Date(),
+  } = options;
+
+  const tasks = getEnabledTasks();
+  const catchup = collectDailyCatchupTasks(tasks, cutoffHour, now);
+
+  console.log('🛟 每日任务补偿检查完成', {
+    cutoffHour,
+    candidateTaskCount: catchup.tasks.length,
+    missingCount: catchup.missingTasks.length,
+    failedCount: catchup.failedTasks.length,
+  });
+
+  if (catchup.tasks.length === 0) {
+    return {
+      total: 0,
+      missingCount: 0,
+      failedCount: 0,
+      successCount: 0,
+      errorCount: 0,
+    };
+  }
+
+  const maxConcurrency = Math.min(getDailyCatchupMaxConcurrency(), catchup.tasks.length);
+  const results = [];
+  let cursor = 0;
+
+  console.log('🛟 每日任务补偿开始执行', {
+    total: catchup.tasks.length,
+    maxConcurrency,
+  });
+
+  const workers = Array.from({ length: maxConcurrency }, async () => {
+    while (cursor < catchup.tasks.length) {
+      const currentIndex = cursor;
+      cursor += 1;
+      results[currentIndex] = await runCatchupTask(catchup.tasks[currentIndex]);
+    }
+  });
+
+  await Promise.all(workers);
+
+  const successCount = results.filter((item) => item.ok).length;
+  const errorCount = results.length - successCount;
+
+  console.log('🛟 每日任务补偿执行结束', {
+    total: results.length,
+    successCount,
+    errorCount,
+    missingCount: catchup.missingTasks.length,
+    failedCount: catchup.failedTasks.length,
+  });
+
+  return {
+    total: results.length,
+    successCount,
+    errorCount,
+    missingCount: catchup.missingTasks.length,
+    failedCount: catchup.failedTasks.length,
+    results,
+  };
 }
 
 function discardInactiveClient(accountId, accountName, client, reason) {
@@ -295,6 +518,20 @@ export async function initScheduler() {
       accounts: seedResult.details,
     });
   }
+
+  const cronRebalanceResult = rebalanceDefaultTaskCronExpressions();
+  if (cronRebalanceResult.updated > 0) {
+    console.log('🕒 已迁移默认任务 cron 分布，缓解中午洪峰', {
+      updated: cronRebalanceResult.updated,
+      details: cronRebalanceResult.details,
+    });
+  }
+  if (cronRebalanceResult.skippedUnknown > 0) {
+    console.log('🕒 发现历史默认 cron 配置缺少自定义标记，已跳过自动迁移以避免误改用户设置', {
+      skippedUnknown: cronRebalanceResult.skippedUnknown,
+      details: cronRebalanceResult.skippedDetails,
+    });
+  }
   
   const tasks = getEnabledTasks();
   console.log(`📋 找到 ${tasks.length} 个启用的任务`);
@@ -307,6 +544,14 @@ export async function initScheduler() {
     await checkAndRunDueTasks();
   }, {
     timezone: config.cron.timezone
+  });
+
+  cron.schedule(DAILY_CATCHUP_CRON, async () => {
+    await runDailyTaskCatchup({
+      cutoffHour: DAILY_CATCHUP_CUTOFF_HOUR,
+    });
+  }, {
+    timezone: config.cron.timezone,
   });
 
   console.log('✅ 定时任务调度器初始化完成');
@@ -1967,6 +2212,7 @@ export default {
   initScheduler,
   scheduleTask,
   executeTask,
+  runDailyTaskCatchup,
   stopScheduler,
   getActiveConnections,
   getScheduledJobs

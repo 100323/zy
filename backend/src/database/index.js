@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS task_configs (
   task_type TEXT NOT NULL,
   enabled INTEGER DEFAULT 0,
   cron_expression TEXT,
+  cron_is_customized INTEGER,
   config_json TEXT,
   last_run_at DATETIME,
   next_run_at DATETIME,
@@ -172,6 +173,7 @@ export async function initDatabase() {
   db.run(schema);
   ensureUsersSchema(db);
   ensureGameAccountSchema(db);
+  ensureTaskConfigSchema(db);
   normalizeGameAccounts(db);
   cleanupLogTables(db);
   
@@ -230,6 +232,21 @@ function ensureGameAccountSchema(db) {
     }
   } catch (error) {
     console.warn('⚠️ 检查 game_accounts 表结构失败:', error?.message || error);
+  }
+}
+
+function ensureTaskConfigSchema(db) {
+  try {
+    const result = db.exec("PRAGMA table_info('task_configs')");
+    const columns = new Set(
+      result?.[0]?.values?.map((row) => String(row?.[1] || '').toLowerCase()) || []
+    );
+
+    if (!columns.has('cron_is_customized')) {
+      db.run('ALTER TABLE task_configs ADD COLUMN cron_is_customized INTEGER');
+    }
+  } catch (error) {
+    console.warn('⚠️ 检查 task_configs 表结构失败:', error?.message || error);
   }
 }
 

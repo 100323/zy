@@ -29,6 +29,7 @@ export const config = {
   },
   scheduler: {
     maxConcurrentAccounts: Number(process.env.MAX_CONCURRENT_ACCOUNTS) || 2,
+    dailyCatchupMaxConcurrency: Number(process.env.DAILY_CATCHUP_MAX_CONCURRENCY) || 2,
     staggerWindowMs: Number(process.env.SCHEDULER_STAGGER_WINDOW_MS) || 180000,
     sensitiveTaskThrottleMs: {
       HANGUP_ADD_TIME: Number(process.env.HANGUP_ADD_TIME_THROTTLE_MS) || 3000,

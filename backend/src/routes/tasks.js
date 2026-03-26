@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { run, get, all, cleanupTaskLogs, getDatabase, saveDatabase } from '../database/index.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { calculateNextRunAt } from '../utils/cronSchedule.js';
 
 const router = Router();
 
@@ -9,40 +10,69 @@ router.use(authMiddleware);
 export const TASK_TYPES = {
   SIGN_IN: { name: '每日签到', cron: '0 8 * * *', group: 'daily' },
   LEGION_SIGN: { name: '军团签到', cron: '0 8 * * *', group: 'daily' },
-  ARENA: { name: '竞技场战斗', cron: '1 12 * * *', group: 'daily' },
-  TOWER: { name: '爬塔', cron: '1 12 * * *', group: 'dungeon' },
+  ARENA: { name: '竞技场战斗', cron: '4 12 * * *', group: 'daily' },
+  TOWER: { name: '爬塔', cron: '13 12 * * *', group: 'dungeon' },
   BOSS_TOWER: { name: '咸王宝库', cron: '0 10 * * *', group: 'dungeon' },
-  WEIRD_TOWER: { name: '怪异塔', cron: '1 12 * * *', group: 'dungeon' },
-  WEIRD_TOWER_FREE_ITEM: { name: '怪异塔免费道具', cron: '1 12 * * *', group: 'dungeon' },
-  WEIRD_TOWER_USE_ITEM: { name: '使用怪异塔道具', cron: '1 12 * * *', group: 'dungeon' },
-  WEIRD_TOWER_MERGE_ITEM: { name: '怪异塔合成', cron: '1 12 * * *', group: 'dungeon' },
+  WEIRD_TOWER: { name: '怪异塔', cron: '13 12 * * *', group: 'dungeon' },
+  WEIRD_TOWER_FREE_ITEM: { name: '怪异塔免费道具', cron: '13 12 * * *', group: 'dungeon' },
+  WEIRD_TOWER_USE_ITEM: { name: '使用怪异塔道具', cron: '16 12 * * *', group: 'dungeon' },
+  WEIRD_TOWER_MERGE_ITEM: { name: '怪异塔合成', cron: '16 12 * * *', group: 'dungeon' },
   LEGION_BOSS: { name: '军团BOSS', cron: '1 0 * * *', group: 'dungeon' },
-  DAILY_BOSS: { name: '每日咸王', cron: '1 12 * * *', group: 'dungeon' },
+  DAILY_BOSS: { name: '每日咸王', cron: '10 12 * * *', group: 'dungeon' },
   RECRUIT: { name: '武将招募', cron: '1 12 * * *', group: 'resource' },
   FRIEND_GOLD: { name: '送好友金币', cron: '1 12 * * *', group: 'daily' },
   BUY_GOLD: { name: '点金', cron: '1 12 * * *', group: 'resource' },
-  FISHING: { name: '钓鱼', cron: '1 12 * * *', group: 'resource' },
+  FISHING: { name: '钓鱼', cron: '7 12 * * *', group: 'resource' },
   MAIL_CLAIM: { name: '领取邮件', cron: '0 8 * * *', group: 'daily' },
   HANGUP_CLAIM: { name: '领取挂机奖励', cron: '0 */8 * * *', group: 'daily' },
   STUDY: { name: '答题', cron: '1 12 * * *', group: 'daily' },
   HANGUP_ADD_TIME: { name: '一键加钟', cron: '0 */3 * * *', group: 'daily' },
   BOTTLE_RESET: { name: '重置罐子', cron: '0 */7 * * *', group: 'daily' },
-  BOTTLE_CLAIM: { name: '领取罐子', cron: '1 12 * * *', group: 'daily' },
-  CAR_SEND: { name: '智能发车', cron: '1 12 * * *', group: 'daily' },
+  BOTTLE_CLAIM: { name: '领取罐子', cron: '13 12 * * *', group: 'daily' },
+  CAR_SEND: { name: '智能发车', cron: '7 12 * * *', group: 'daily' },
   CAR_CLAIM: { name: '一键收车', cron: '1 18 * * *', group: 'daily' },
-  BLACK_MARKET: { name: '黑市采购', cron: '1 12 * * *', group: 'daily' },
+  BLACK_MARKET: { name: '黑市采购', cron: '4 12 * * *', group: 'daily' },
   TREASURE_CLAIM: { name: '珍宝阁领取', cron: '1 0 * * *', group: 'daily' },
   LEGACY_CLAIM: { name: '残卷收取', cron: '0 */6 * * *', group: 'daily' },
-  WELFARE_CLAIM: { name: '福利奖励领取', cron: '1 12 * * *', group: 'daily' },
-  DAILY_TASK_CLAIM: { name: '每日任务奖励领取', cron: '1 12 * * *', group: 'daily' },
-  DREAM: { name: '梦境', cron: '1 12 * * *', group: 'dungeon' },
-  SKIN_CHALLENGE: { name: '换皮闯关', cron: '1 12 * * *', group: 'dungeon' },
-  DREAM_PURCHASE: { name: '购买梦境商品', cron: '1 12 * * *', group: 'dungeon' },
+  WELFARE_CLAIM: { name: '福利奖励领取', cron: '4 12 * * *', group: 'daily' },
+  DAILY_TASK_CLAIM: { name: '每日任务奖励领取', cron: '4 12 * * *', group: 'daily' },
+  DREAM: { name: '梦境', cron: '10 12 * * *', group: 'dungeon' },
+  SKIN_CHALLENGE: { name: '换皮闯关', cron: '10 12 * * *', group: 'dungeon' },
+  DREAM_PURCHASE: { name: '购买梦境商品', cron: '10 12 * * *', group: 'dungeon' },
   PEACH_TASK: { name: '蟠桃园任务', cron: '0 10 * * *', group: 'dungeon' },
-  BOX_OPEN: { name: '批量开箱', cron: '1 12 * * *', group: 'resource' },
-  LEGION_STORE_FRAGMENT: { name: '购买四圣碎片', cron: '1 12 * * *', group: 'resource' },
+  BOX_OPEN: { name: '批量开箱', cron: '7 12 * * *', group: 'resource' },
+  LEGION_STORE_FRAGMENT: { name: '购买四圣碎片', cron: '7 12 * * *', group: 'resource' },
   GENIE_SWEEP: { name: '灯神扫荡', cron: '1 0 * * *', group: 'resource' },
 };
+
+export const LEGACY_DEFAULT_TASK_CRONS = {
+  ARENA: '1 12 * * *',
+  TOWER: '1 12 * * *',
+  WEIRD_TOWER: '1 12 * * *',
+  WEIRD_TOWER_FREE_ITEM: '1 12 * * *',
+  WEIRD_TOWER_USE_ITEM: '1 12 * * *',
+  WEIRD_TOWER_MERGE_ITEM: '1 12 * * *',
+  DAILY_BOSS: '1 12 * * *',
+  FRIEND_GOLD: '1 12 * * *',
+  BUY_GOLD: '1 12 * * *',
+  FISHING: '1 12 * * *',
+  STUDY: '1 12 * * *',
+  BOTTLE_CLAIM: '1 12 * * *',
+  CAR_SEND: '1 12 * * *',
+  BLACK_MARKET: '1 12 * * *',
+  WELFARE_CLAIM: '1 12 * * *',
+  DAILY_TASK_CLAIM: '1 12 * * *',
+  DREAM: '1 12 * * *',
+  SKIN_CHALLENGE: '1 12 * * *',
+  DREAM_PURCHASE: '1 12 * * *',
+  BOX_OPEN: '1 12 * * *',
+  LEGION_STORE_FRAGMENT: '1 12 * * *',
+  RECRUIT: '1 12 * * *',
+};
+
+export const REBALANCED_DEFAULT_TASK_CRONS = Object.fromEntries(
+  Object.entries(TASK_TYPES).map(([taskType, meta]) => [taskType, meta.cron])
+);
 
 export const DEFAULT_TASK_CONFIG_SEEDS = {
   HANGUP_CLAIM: { enabled: true, config: { count: 5 } },
@@ -103,13 +133,14 @@ function insertDefaultTaskConfig(targetDb, accountId, taskType, seed = {}) {
   }
 
   targetDb.run(
-    `INSERT INTO task_configs (account_id, task_type, enabled, cron_expression, config_json)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO task_configs (account_id, task_type, enabled, cron_expression, cron_is_customized, config_json)
+     VALUES (?, ?, ?, ?, ?, ?)`,
     [
       accountId,
       taskType,
       seed.enabled ? 1 : 0,
       seed.cronExpression || taskMeta.cron,
+      0,
       JSON.stringify(seed.config || {}),
     ]
   );
@@ -168,6 +199,74 @@ export function ensureDefaultTaskConfigsForAllAccounts(targetDb = getDatabase())
     accountCount: accounts.length,
     created,
     details,
+  };
+}
+
+export function rebalanceDefaultTaskCronExpressions() {
+  let updated = 0;
+  const details = [];
+  let skippedUnknown = 0;
+  const skippedDetails = [];
+
+  for (const [taskType, legacyCron] of Object.entries(LEGACY_DEFAULT_TASK_CRONS)) {
+    const targetCron = REBALANCED_DEFAULT_TASK_CRONS[taskType];
+    if (!targetCron || targetCron === legacyCron) {
+      continue;
+    }
+
+    const eligibleRows = all(
+      'SELECT id FROM task_configs WHERE task_type = ? AND cron_expression = ? AND cron_is_customized = 0',
+      [taskType, legacyCron],
+    );
+
+    const unknownRows = all(
+      'SELECT id FROM task_configs WHERE task_type = ? AND cron_expression = ? AND cron_is_customized IS NULL',
+      [taskType, legacyCron],
+    );
+
+    if (eligibleRows.length === 0 && unknownRows.length === 0) {
+      continue;
+    }
+
+    if (eligibleRows.length > 0) {
+      const nextRunAt = calculateNextRunAt(targetCron);
+      run(
+        `UPDATE task_configs
+            SET cron_expression = ?, next_run_at = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE task_type = ?
+            AND cron_expression = ?
+            AND cron_is_customized = 0`,
+        [targetCron, nextRunAt, taskType, legacyCron],
+      );
+
+      updated += eligibleRows.length;
+      details.push({
+        taskType,
+        from: legacyCron,
+        to: targetCron,
+        affectedCount: eligibleRows.length,
+      });
+    }
+
+    if (unknownRows.length > 0) {
+      skippedUnknown += unknownRows.length;
+      skippedDetails.push({
+        taskType,
+        cronExpression: legacyCron,
+        skippedCount: unknownRows.length,
+      });
+    }
+  }
+
+  if (updated > 0) {
+    saveDatabase();
+  }
+
+  return {
+    updated,
+    details,
+    skippedUnknown,
+    skippedDetails,
   };
 }
 
@@ -254,19 +353,36 @@ router.post('/account/:accountId', async (req, res) => {
     }
 
     const existing = get(
-      'SELECT id FROM task_configs WHERE account_id = ? AND task_type = ?',
+      'SELECT id, task_type FROM task_configs WHERE account_id = ? AND task_type = ?',
       [accountId, taskType]
     );
 
     const cron = cronExpression || TASK_TYPES[taskType].cron;
     const configJson = config ? JSON.stringify(config) : null;
+    const cronIsCustomized = Number(cron !== TASK_TYPES[taskType].cron);
 
     if (existing) {
+      const updateFields = [
+        'enabled = ?',
+        'cron_expression = ?',
+        'config_json = ?',
+      ];
+      const updateValues = [
+        enabled ? 1 : 0,
+        cron,
+        configJson,
+      ];
+
+      updateFields.push('cron_is_customized = ?');
+      updateValues.push(cronIsCustomized);
+
+      updateValues.push(existing.id);
+
       run(
-        `UPDATE task_configs 
-         SET enabled = ?, cron_expression = ?, config_json = ?, updated_at = CURRENT_TIMESTAMP 
+        `UPDATE task_configs
+         SET ${updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
-        [enabled ? 1 : 0, cron, configJson, existing.id]
+        updateValues
       );
 
       const { checkAndRunDueTasks } = await import('../scheduler/index.js');
@@ -278,9 +394,9 @@ router.post('/account/:accountId', async (req, res) => {
       });
     } else {
       const result = run(
-        `INSERT INTO task_configs (account_id, task_type, enabled, cron_expression, config_json) 
-         VALUES (?, ?, ?, ?, ?)`,
-        [accountId, taskType, enabled ? 1 : 0, cron, configJson]
+        `INSERT INTO task_configs (account_id, task_type, enabled, cron_expression, cron_is_customized, config_json) 
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [accountId, taskType, enabled ? 1 : 0, cron, cronIsCustomized, configJson]
       );
 
       const { checkAndRunDueTasks } = await import('../scheduler/index.js');
@@ -307,7 +423,7 @@ router.put('/:id', async (req, res) => {
     const { enabled, cronExpression, config } = req.body;
 
     const taskConfig = get(
-      `SELECT tc.id FROM task_configs tc 
+      `SELECT tc.id, tc.task_type FROM task_configs tc 
        JOIN game_accounts ga ON tc.account_id = ga.id 
        WHERE tc.id = ? AND ga.user_id = ?`,
       [id, req.user.userId]
@@ -330,6 +446,8 @@ router.put('/:id', async (req, res) => {
     if (cronExpression !== undefined) {
       updateFields.push('cron_expression = ?');
       updateValues.push(cronExpression);
+      updateFields.push('cron_is_customized = ?');
+      updateValues.push(Number(cronExpression !== TASK_TYPES[taskConfig.task_type]?.cron));
     }
     if (config !== undefined) {
       updateFields.push('config_json = ?');
