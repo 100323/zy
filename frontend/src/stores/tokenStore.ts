@@ -14,6 +14,8 @@ import router from "@/router";
 import api from "@utils/api";
 import { useAuthStore } from "./auth";
 
+const DEFAULT_ACCOUNT_AVATAR = "/icons/tom_king.jpg";
+
 const indexedDb = useIndexedDB();
 const {
   isReady: indexedDbReady,
@@ -582,7 +584,7 @@ export const useTokenStore = defineStore("tokens", () => {
           server: tokenData.server || "",
           wsUrl: tokenData.wsUrl || "",
           remark: tokenData.remark || "",
-          avatar: tokenData.avatar || "",
+          avatar: tokenData.avatar || DEFAULT_ACCOUNT_AVATAR,
           importMethod: tokenData.importMethod || "manual",
           sourceUrl: tokenData.sourceUrl || "",
           binData: backendBin?.binData || "",
@@ -611,7 +613,7 @@ export const useTokenStore = defineStore("tokens", () => {
           server: tokenData.server || "",
           wsUrl: tokenData.wsUrl || "",
           remark: tokenData.remark || "",
-          avatar: tokenData.avatar || "",
+          avatar: tokenData.avatar || DEFAULT_ACCOUNT_AVATAR,
           binData: backendBin?.binData || "",
         });
         await migrateTokenIdToBackendId(tokenData.id, String(exists.id));
@@ -693,7 +695,7 @@ export const useTokenStore = defineStore("tokens", () => {
               wsUrl: account.ws_url ?? existingToken?.wsUrl ?? null,
               server: account.server ?? existingToken?.server ?? "",
               remark: account.remark ?? existingToken?.remark ?? "",
-              avatar: account.avatar ?? existingToken?.avatar ?? "",
+              avatar: account.avatar ?? existingToken?.avatar ?? DEFAULT_ACCOUNT_AVATAR,
               importMethod: account.import_method || existingToken?.importMethod || "manual",
               sourceUrl: account.source_url ?? existingToken?.sourceUrl ?? null,
               createdAt: existingToken?.createdAt || account.created_at || new Date().toISOString(),
@@ -764,7 +766,7 @@ export const useTokenStore = defineStore("tokens", () => {
       // URL获取相关信息
       sourceUrl: sourceUrl || null, // Token来源URL（用于刷新）
       importMethod: importMethod || "manual", // 导入方式：manual 或 url
-      avatar: avatar || "", // 用户头像
+      avatar: avatar || DEFAULT_ACCOUNT_AVATAR, // 用户头像
       storageKey: normalizeStorageKey((extraFields as any).storageKey || id),
       legacyStorageKeys: mergeLegacyStorageKeys(
         Array.isArray((extraFields as any).legacyStorageKeys)

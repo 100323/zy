@@ -295,19 +295,20 @@ onMounted(() => {
   gap: 16px;
   max-height: 70vh;
   overflow: hidden;
+  padding: 2px;
 }
 
 .panel-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-light);
+  padding: 4px 2px 14px;
 
   h3 {
     margin: 0;
     font-size: 16px;
     font-weight: 600;
+    color: var(--text-primary);
   }
 
   .header-actions {
@@ -338,15 +339,16 @@ onMounted(() => {
 .task-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   padding: 8px 0;
 }
 
 .task-item {
-  padding: 12px;
-  background: var(--bg-secondary);
-  border-radius: 8px;
-  border: 1px solid var(--border-light);
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.74);
+  border-radius: 18px;
+  border: 1px solid rgba(138, 151, 185, 0.14);
+  box-shadow: 0 8px 20px rgba(24, 39, 75, 0.06);
 }
 
 .task-header {
@@ -362,14 +364,15 @@ onMounted(() => {
 
   .task-label {
     font-size: 14px;
-    font-weight: 500;
+    font-weight: 600;
+    color: var(--text-primary);
   }
 }
 
 .task-config-fields {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px dashed var(--border-light);
+  border-top: 1px dashed rgba(138, 151, 185, 0.2);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -391,7 +394,7 @@ onMounted(() => {
 
   .field-input {
     flex: 1;
-    max-width: 200px;
+    max-width: 240px;
   }
 }
 
@@ -400,7 +403,6 @@ onMounted(() => {
   justify-content: flex-end;
   gap: 12px;
   padding-top: 12px;
-  border-top: 1px solid var(--border-light);
 }
 
 .tooltip-content {
@@ -409,5 +411,79 @@ onMounted(() => {
   word-break: break-all;
   line-height: 1.5;
   font-size: 12px;
+}
+
+:deep(.n-collapse) {
+  background: transparent;
+}
+
+:deep(.n-collapse-item) {
+  margin-bottom: 12px;
+  border-radius: 20px;
+  border: 1px solid rgba(138, 151, 185, 0.14);
+  background: rgba(255, 255, 255, 0.72);
+  overflow: hidden;
+  box-shadow: 0 8px 20px rgba(24, 39, 75, 0.05);
+}
+
+:deep(.n-collapse-item__header) {
+  padding: 16px 18px !important;
+}
+
+:deep(.n-collapse-item__content-wrapper .n-collapse-item__content-inner) {
+  padding: 0 14px 14px !important;
+}
+
+:deep(.n-base-selection),
+:deep(.n-input-number),
+:deep(.n-input .n-input-wrapper) {
+  border-radius: 14px !important;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(138, 151, 185, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.36);
+}
+
+:deep(.n-base-selection:hover),
+:deep(.n-input-number:hover),
+:deep(.n-input .n-input-wrapper:hover) {
+  border-color: rgba(91, 124, 255, 0.3);
+}
+
+:deep(.n-base-selection.n-base-selection--active),
+:deep(.n-input-number.n-input-number--focus),
+:deep(.n-input.n-input--focus .n-input-wrapper) {
+  border-color: rgba(91, 124, 255, 0.45);
+  box-shadow:
+    0 0 0 4px rgba(91, 124, 255, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.36);
+}
+
+:deep(.n-input-number .n-input-wrapper),
+:deep(.n-input .n-input-wrapper) {
+  box-shadow: none;
+}
+
+:deep(.n-input-number .n-input__border),
+:deep(.n-input .n-input__border),
+:deep(.n-base-selection .n-base-selection__border) {
+  display: none !important;
+}
+
+@media (max-width: 768px) {
+  .panel-header,
+  .task-header,
+  .config-field,
+  .panel-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .config-field {
+    gap: 8px;
+  }
+
+  .config-field .field-input {
+    max-width: none;
+  }
 }
 </style>

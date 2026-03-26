@@ -84,8 +84,8 @@
           <el-card class="token-card" :class="{ active: selectedTokenId === token.id }" @click="selectToken(token)">
             <div class="token-header">
               <div class="token-info">
-                <el-avatar :size="40" :src="token.avatar || '/icons/xiaoyugan.png'">
-                  <img src="/icons/xiaoyugan.png" alt="avatar" />
+                <el-avatar :size="40" :src="token.avatar || '/icons/tom_king.jpg'">
+                  <img src="/icons/tom_king.jpg" alt="avatar" />
                 </el-avatar>
                 <div class="token-details">
                   <div class="token-name">{{ token.name }}</div>

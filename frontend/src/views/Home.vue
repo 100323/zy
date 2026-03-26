@@ -473,7 +473,7 @@ onUnmounted(() => {
   min-height: 320px;
 
   :deep(.el-card__header) {
-    border-bottom: 1px solid rgba(138, 151, 185, 0.14);
+    border-bottom: none;
     padding-bottom: 14px;
   }
 

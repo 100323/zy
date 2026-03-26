@@ -256,31 +256,45 @@ const handleRegister = async () => {
   :deep(.el-tabs__nav-wrap::after) {
     display: none;
   }
+
+  :deep(.el-tabs__nav-wrap) {
+    display: flex;
+    justify-content: center;
+  }
   
   :deep(.el-tabs__nav-scroll) {
     display: flex;
     justify-content: center;
+    width: 100%;
   }
 
   :deep(.el-tabs__nav) {
     padding: 4px;
     background: rgba(91, 124, 255, 0.08);
     border-radius: 999px;
+    width: min(220px, 100%);
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    box-shadow: inset 0 0 0 1px rgba(91, 124, 255, 0.08);
   }
 
   :deep(.el-tabs__item) {
     font-size: 15px;
     height: 42px;
-    padding: 0 22px;
+    padding: 0 14px;
     border-radius: 999px;
     color: var(--text-secondary);
+    justify-content: center;
+    transition: all 0.2s ease;
+    font-weight: 600;
   }
   
   :deep(.el-tabs__active-bar) {
     display: none;
   }
 
-  :deep(.is-active) {
+  :deep(.el-tabs__item.is-active) {
     color: #fff;
     background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
     box-shadow: 0 10px 22px rgba(91, 124, 255, 0.24);

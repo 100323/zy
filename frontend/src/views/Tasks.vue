@@ -894,7 +894,7 @@ onMounted(() => {
 .tasks-content-card {
   :deep(.n-card-header) {
     padding-bottom: 14px;
-    border-bottom: 1px solid rgba(138, 151, 185, 0.14);
+    border-bottom: none;
   }
 
   :deep(.n-card__content) {
@@ -978,6 +978,10 @@ onMounted(() => {
   }
 }
 
+:deep(.n-alert) {
+  border-radius: 18px;
+}
+
 :deep(.n-tabs-nav) {
   margin-bottom: 12px;
 }
@@ -1023,6 +1027,60 @@ onMounted(() => {
 :deep(.n-input-number),
 :deep(.n-base-selection) {
   max-width: 100%;
+}
+
+:deep(.n-base-selection),
+:deep(.n-input-number),
+:deep(.n-input .n-input-wrapper),
+:deep(.n-time-picker .n-input__input-el),
+:deep(.n-input-number .n-input__input-el) {
+  border-radius: 14px !important;
+}
+
+:deep(.n-base-selection),
+:deep(.n-input-number) {
+  min-height: 40px;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(138, 151, 185, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+:deep(.n-base-selection:hover),
+:deep(.n-input-number:hover) {
+  border-color: rgba(91, 124, 255, 0.28);
+}
+
+:deep(.n-base-selection.n-base-selection--active),
+:deep(.n-input-number.n-input-number--focus) {
+  border-color: rgba(91, 124, 255, 0.45);
+  box-shadow:
+    0 0 0 4px rgba(91, 124, 255, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+:deep(.n-base-selection .n-base-selection-label),
+:deep(.n-base-selection .n-base-selection-placeholder),
+:deep(.n-input-number .n-input__input-el) {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+:deep(.n-input-number .n-input-wrapper),
+:deep(.n-time-picker .n-input__input),
+:deep(.n-select .n-base-selection-label) {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:deep(.n-input-number .n-input__border),
+:deep(.n-time-picker .n-input__border),
+:deep(.n-base-selection .n-base-selection__border) {
+  display: none !important;
+}
+
+:deep(.n-select .n-base-selection-tags),
+:deep(.n-base-selection .n-base-selection-label) {
+  padding-left: 2px;
 }
 
 @media (max-width: 768px) {
