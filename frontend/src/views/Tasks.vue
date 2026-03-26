@@ -83,7 +83,7 @@
                         :value="getTaskScheduleType(task.value)"
                         :options="scheduleModeOptions"
                         size="small"
-                        style="width: 120px"
+                        class="task-schedule-mode"
                         @update:value="(val) => setTaskScheduleType(task.value, val)"
                       />
                       <n-time-picker
@@ -101,7 +101,7 @@
                         :min="1"
                         :max="23"
                         size="small"
-                        style="width: 140px"
+                        class="task-interval-input"
                         placeholder="每N小时"
                         @update:value="(val) => setTaskIntervalHours(task.value, val)"
                       />
@@ -978,6 +978,29 @@ onMounted(() => {
   }
 }
 
+.task-schedule-mode {
+  width: 132px;
+}
+
+.task-interval-input {
+  width: 108px;
+  min-height: 36px;
+
+  :deep(.n-input__input-el) {
+    height: 34px;
+    font-size: 14px;
+  }
+
+  :deep(.n-input-number-button) {
+    width: 24px;
+    height: 16px;
+  }
+
+  :deep(.n-input-number-button .n-base-icon) {
+    font-size: 12px;
+  }
+}
+
 :deep(.n-alert) {
   border-radius: 18px;
 }
@@ -1115,6 +1138,11 @@ onMounted(() => {
   }
 
   .scheduled-task-item .task-time {
+    width: 100%;
+  }
+
+  .task-schedule-mode,
+  .task-interval-input {
     width: 100%;
   }
 }
