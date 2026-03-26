@@ -51,17 +51,19 @@
         </el-header>
         
         <el-main class="main">
-          <router-view v-slot="{ Component }">
-            <template v-if="Component">
-              <component :is="Component" />
-            </template>
-            <template v-else>
-              <div style="background: red; color: white; padding: 20px;">
-                错误: 没有匹配的路由组件!
-                <br>当前路径: {{ $route.path }}
-              </div>
-            </template>
-          </router-view>
+          <div class="page-outlet">
+            <router-view v-slot="{ Component }">
+              <template v-if="Component">
+                <component :is="Component" />
+              </template>
+              <template v-else>
+                <div style="background: red; color: white; padding: 20px;">
+                  错误: 没有匹配的路由组件!
+                  <br>当前路径: {{ $route.path }}
+                </div>
+              </template>
+            </router-view>
+          </div>
         </el-main>
       </el-container>
     </el-container>
@@ -167,53 +169,122 @@ watch(
 <style lang="scss" scoped>
 .layout-container {
   min-height: 100vh;
-  background: #f5f7fa;
+  background: transparent;
+  position: relative;
+
+  &::before,
+  &::after {
+    content: '';
+    position: fixed;
+    inset: auto;
+    pointer-events: none;
+    z-index: 0;
+    filter: blur(12px);
+  }
+
+  &::before {
+    width: 320px;
+    height: 320px;
+    top: 80px;
+    right: -120px;
+    background: radial-gradient(circle, rgba(91, 124, 255, 0.22), transparent 68%);
+  }
+
+  &::after {
+    width: 280px;
+    height: 280px;
+    bottom: 40px;
+    left: -100px;
+    background: radial-gradient(circle, rgba(124, 92, 255, 0.18), transparent 68%);
+  }
 }
 
 .el-container {
   min-height: 100vh;
+  position: relative;
+  z-index: 1;
 }
 
 .sidebar {
-  background: #1e1e2d;
+  background: var(--bg-sidebar);
   border-right: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 20px 0 48px rgba(7, 12, 24, 0.18);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   
   .logo {
-    height: 60px;
+    height: 74px;
     display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 10px;
-    padding: 0 20px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    justify-content: flex-start;
+    gap: 12px;
+    padding: 0 22px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     
     img {
-      width: 32px;
-      height: 32px;
+      width: 38px;
+      height: 38px;
+      border-radius: 14px;
+      box-shadow: 0 10px 24px rgba(91, 124, 255, 0.26);
     }
     
     span {
       color: white;
-      font-size: 18px;
-      font-weight: bold;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
     }
   }
   
   .el-menu {
     border-right: none;
+    padding: 14px 12px 18px;
+    background: transparent;
+  }
+
+  :deep(.el-menu-item) {
+    height: 48px;
+    margin-bottom: 8px;
+    border-radius: 16px;
+    color: rgba(226, 233, 255, 0.76);
+    transition: all 0.2s ease;
+    overflow: hidden;
+
+    .el-icon {
+      margin-right: 10px;
+      font-size: 18px;
+    }
+
+    &:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.08);
+    }
+  }
+
+  :deep(.el-menu-item.is-active) {
+    color: #fff;
+    background:
+      linear-gradient(135deg, rgba(91, 124, 255, 0.9), rgba(124, 92, 255, 0.82));
+    box-shadow: 0 16px 28px rgba(70, 92, 196, 0.28);
   }
 }
 
 .header {
-  background: white;
+  background: rgba(255, 255, 255, 0.76);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 20px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  min-height: 74px;
+  margin: 14px 16px 0;
+  padding: 12px 18px;
+  border: 1px solid rgba(138, 151, 185, 0.16);
+  border-radius: 24px;
+  box-shadow: var(--shadow-glass);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
   position: sticky;
-  top: 0;
-  z-index: 20;
+  top: 12px;
+  z-index: 30;
   
   .header-left {
     display: flex;
@@ -223,8 +294,10 @@ watch(
 
     h2 {
       margin: 0;
-      font-size: 18px;
-      color: #333;
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: 0.01em;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -237,13 +310,23 @@ watch(
     gap: 8px;
     cursor: pointer;
     min-width: 0;
+    padding: 8px 12px;
+    border-radius: 999px;
+    background: rgba(91, 124, 255, 0.08);
+    transition: all 0.2s ease;
     
     .username {
-      color: #333;
+      color: var(--text-primary);
+      font-weight: 600;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
       max-width: 180px;
+    }
+
+    &:hover {
+      background: rgba(91, 124, 255, 0.14);
+      box-shadow: inset 0 0 0 1px rgba(91, 124, 255, 0.14);
     }
   }
 }
@@ -254,62 +337,77 @@ watch(
 }
 
 .main {
-  background: #f5f7fa;
-  padding: 20px;
+  background: transparent;
+  padding: 18px 16px 20px;
   min-width: 0;
   overflow-x: hidden;
+}
+
+.page-outlet {
+  max-width: var(--page-max-width);
+  margin: 0 auto;
 }
 
 .mobile-drawer-content {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #1e1e2d;
+  background: var(--bg-sidebar);
 }
 
 .mobile-drawer-logo {
-  height: 60px;
+  height: 72px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   padding: 0 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 
   img {
-    width: 32px;
-    height: 32px;
+    width: 38px;
+    height: 38px;
+    border-radius: 14px;
   }
 
   span {
     color: white;
-    font-size: 18px;
-    font-weight: bold;
+    font-size: 20px;
+    font-weight: 700;
   }
 }
 
 .mobile-menu {
   flex: 1;
   border-right: none;
+  padding: 14px 12px 24px;
 }
 
 :deep(.mobile-drawer) {
+  .el-drawer {
+    background: transparent;
+  }
+
   .el-drawer__body {
     padding: 0;
-    background: #1e1e2d;
+    background: var(--bg-sidebar);
   }
 
   .el-menu {
     border-right: none;
-    background: #1e1e2d;
+    background: transparent;
   }
 
   .el-menu-item {
-    color: #a2a3b8;
+    height: 46px;
+    margin-bottom: 8px;
+    border-radius: 14px;
+    color: rgba(226, 233, 255, 0.76);
   }
 
   .el-menu-item.is-active {
     color: #fff;
-    background-color: rgba(255, 255, 255, 0.08);
+    background:
+      linear-gradient(135deg, rgba(91, 124, 255, 0.9), rgba(124, 92, 255, 0.82));
   }
 }
 
@@ -323,13 +421,16 @@ watch(
   }
 
   .header {
-    padding: 0 16px;
+    margin: 12px 12px 0;
+    padding: 12px 14px;
   }
 }
 
 @media (max-width: 768px) {
   .header {
-    padding: 0 12px;
+    top: 8px;
+    min-height: 66px;
+    border-radius: 20px;
 
     .header-left h2 {
       font-size: 16px;
@@ -346,13 +447,14 @@ watch(
   }
 
   .main {
-    padding: 12px;
+    padding: 14px 12px 18px;
   }
 }
 
 @media (max-width: 480px) {
   .header {
-    padding: 0 10px;
+    margin: 8px 8px 0;
+    padding: 10px 12px;
 
     .user-info {
       .username {
@@ -362,7 +464,7 @@ watch(
   }
 
   .main {
-    padding: 10px;
+    padding: 12px 8px 16px;
   }
 }
 </style>

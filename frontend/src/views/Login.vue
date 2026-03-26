@@ -209,55 +209,146 @@ const handleRegister = async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 24px;
+  background:
+    radial-gradient(circle at 15% 20%, rgba(91, 124, 255, 0.3), transparent 28%),
+    radial-gradient(circle at 82% 18%, rgba(124, 92, 255, 0.28), transparent 24%),
+    linear-gradient(135deg, #eff3ff 0%, #f5f6ff 40%, #eef2fb 100%);
 }
 
 .login-card {
-  width: 400px;
-  padding: 40px;
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  width: min(100%, 440px);
+  padding: 32px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(138, 151, 185, 0.18);
+  border-radius: 28px;
+  box-shadow: 0 30px 70px rgba(29, 47, 92, 0.18);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
 }
 
 .login-header {
   text-align: center;
-  margin-bottom: 30px;
+  margin-bottom: 26px;
   
   .logo {
-    width: 64px;
-    height: 64px;
-    margin-bottom: 16px;
+    width: 72px;
+    height: 72px;
+    margin-bottom: 18px;
+    border-radius: 20px;
+    box-shadow: 0 16px 32px rgba(91, 124, 255, 0.2);
   }
   
   h1 {
     margin: 0;
-    font-size: 24px;
-    color: #333;
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: 0.02em;
   }
 }
 
 .login-tabs {
   :deep(.el-tabs__header) {
-    margin-bottom: 30px;
+    margin-bottom: 26px;
   }
   
   :deep(.el-tabs__nav-wrap::after) {
     display: none;
   }
   
+  :deep(.el-tabs__nav-scroll) {
+    display: flex;
+    justify-content: center;
+  }
+
+  :deep(.el-tabs__nav) {
+    padding: 4px;
+    background: rgba(91, 124, 255, 0.08);
+    border-radius: 999px;
+  }
+
   :deep(.el-tabs__item) {
-    font-size: 16px;
+    font-size: 15px;
+    height: 42px;
+    padding: 0 22px;
+    border-radius: 999px;
+    color: var(--text-secondary);
   }
   
   :deep(.el-tabs__active-bar) {
-    height: 3px;
+    display: none;
+  }
+
+  :deep(.is-active) {
+    color: #fff;
+    background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+    box-shadow: 0 10px 22px rgba(91, 124, 255, 0.24);
+  }
+
+  :deep(.el-form-item) {
+    margin-bottom: 18px;
+  }
+
+  :deep(.el-input__wrapper) {
+    min-height: 48px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.84);
   }
 }
 
 .login-btn {
   width: 100%;
-  height: 44px;
+  height: 48px;
   font-size: 16px;
+  margin-top: 8px;
+}
+
+@media (max-width: 768px) {
+  .login-container {
+    padding: 16px;
+  }
+
+  .login-card {
+    padding: 26px 20px;
+    border-radius: 24px;
+  }
+
+  .login-header {
+    margin-bottom: 22px;
+
+    .logo {
+      width: 64px;
+      height: 64px;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      font-size: 24px;
+    }
+  }
+}
+
+@media (max-width: 480px) {
+  .login-container {
+    padding: 12px;
+    align-items: stretch;
+  }
+
+  .login-card {
+    width: 100%;
+    min-height: calc(100vh - 24px);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    border-radius: 22px;
+  }
+
+  .login-tabs {
+    :deep(.el-tabs__item) {
+      flex: 1;
+      padding: 0 14px;
+    }
+  }
 }
 </style>

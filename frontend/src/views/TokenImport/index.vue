@@ -674,51 +674,61 @@ onMounted(async () => {
 
 <style scoped lang="scss">
 .token-import-page {
-  padding: var(--spacing-md);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 
   .header-card {
-    margin-bottom: 16px;
+    margin-bottom: 0;
   }
 
   .limit-alert {
-    margin-bottom: 16px;
+    margin-bottom: 0;
+    border-radius: 18px;
   }
 
   .page-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 18px;
 
     .header-left {
       h2 {
         margin: 0 0 4px 0;
-        font-size: 18px;
+        font-size: 22px;
+        color: var(--text-primary);
       }
 
       p {
         margin: 0;
-        color: var(--el-text-color-secondary);
+        color: var(--text-secondary);
         font-size: 14px;
       }
     }
   }
 
   .token-cards {
-    margin-bottom: 16px;
+    margin-bottom: 0;
   }
 
   .token-card {
     margin-bottom: 16px;
     cursor: pointer;
-    transition: all 0.3s;
+    transition: all 0.28s ease;
+    position: relative;
+    overflow: hidden;
 
     &:hover {
-      box-shadow: var(--el-box-shadow-light);
+      box-shadow: 0 20px 42px rgba(24, 39, 75, 0.12);
+      transform: translateY(-3px);
     }
 
     &.active {
-      border-color: var(--el-color-primary);
-      box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.2);
+      border-color: rgba(91, 124, 255, 0.28);
+      box-shadow:
+        0 0 0 2px rgba(91, 124, 255, 0.18),
+        0 20px 42px rgba(24, 39, 75, 0.14);
     }
 
     .token-header {
@@ -742,8 +752,8 @@ onMounted(async () => {
     }
 
     .token-name {
-      font-weight: 500;
-      font-size: 15px;
+      font-weight: 700;
+      font-size: 16px;
       margin-bottom: 4px;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -752,31 +762,34 @@ onMounted(async () => {
 
     .token-meta {
       display: flex;
-      gap: 4px;
+      gap: 6px;
       flex-wrap: wrap;
     }
 
     .token-body {
       font-size: 13px;
-      color: var(--el-text-color-secondary);
+      color: var(--text-secondary);
+      display: grid;
+      gap: 8px;
 
       .info-item {
         display: flex;
-        margin-bottom: 6px;
-
-        &:last-child {
-          margin-bottom: 0;
-        }
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        background: rgba(91, 124, 255, 0.05);
 
         .label {
-          color: var(--el-text-color-regular);
+          color: var(--text-secondary);
           min-width: 70px;
           flex-shrink: 0;
+          font-weight: 600;
         }
 
         .value {
           flex: 1;
           word-break: break-all;
+          color: var(--text-primary);
         }
       }
     }
@@ -791,8 +804,6 @@ onMounted(async () => {
 
 @media (max-width: 768px) {
   .token-import-page {
-    padding: var(--spacing-sm);
-
     .page-header {
       flex-direction: column;
       align-items: flex-start;
@@ -808,7 +819,7 @@ onMounted(async () => {
 
       .header-left {
         h2 {
-          font-size: var(--font-size-lg);
+          font-size: 20px;
         }
 
         p {
@@ -843,12 +854,10 @@ onMounted(async () => {
 
 @media (max-width: 480px) {
   .token-import-page {
-    padding: var(--spacing-xs);
-
     .page-header {
       .header-left {
         h2 {
-          font-size: var(--font-size-md);
+          font-size: 18px;
         }
       }
     }
@@ -866,6 +875,22 @@ onMounted(async () => {
 }
 
 .token-import-modal {
+  :deep(.arco-modal-content) {
+    border-radius: 26px;
+    background: var(--bg-elevated-strong);
+    box-shadow: var(--shadow-heavy);
+    overflow: hidden;
+  }
+
+  :deep(.arco-modal-header) {
+    border-bottom: 1px solid rgba(138, 151, 185, 0.14);
+    padding: 18px 22px 14px;
+  }
+
+  :deep(.arco-modal-body) {
+    padding: 18px 22px 20px;
+  }
+
   .modal-title {
     display: flex;
     align-items: center;
@@ -885,12 +910,12 @@ onMounted(async () => {
   }
 
   .import-method-button {
-    min-height: 40px;
-    padding: 8px 12px;
-    border: 1px solid var(--color-border, #dcdfe6);
-    border-radius: var(--border-radius-small);
-    background: #fff;
-    color: var(--color-text-primary, #303133);
+    min-height: 44px;
+    padding: 8px 14px;
+    border: 1px solid rgba(138, 151, 185, 0.18);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.84);
+    color: var(--text-primary);
     font-size: var(--font-size-sm);
     line-height: 1.4;
     text-align: center;
@@ -901,9 +926,9 @@ onMounted(async () => {
 
     &.active {
       color: #fff;
-      background: var(--el-color-primary, #409eff);
-      border-color: var(--el-color-primary, #409eff);
-      box-shadow: 0 0 0 1px rgba(64, 158, 255, 0.1);
+      background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+      border-color: transparent;
+      box-shadow: 0 14px 28px rgba(91, 124, 255, 0.24);
     }
   }
 
@@ -917,6 +942,10 @@ onMounted(async () => {
 
 @media (max-width: 768px) {
   .token-import-modal {
+    :deep(.arco-modal-content) {
+      border-radius: 22px 22px 0 0;
+    }
+
     .modal-title {
       font-size: var(--font-size-md);
     }
@@ -934,6 +963,14 @@ onMounted(async () => {
 
 @media (max-width: 480px) {
   .token-import-modal {
+    :deep(.arco-modal-header) {
+      padding-inline: 16px;
+    }
+
+    :deep(.arco-modal-body) {
+      padding: 16px;
+    }
+
     .import-method-grid {
       grid-template-columns: 1fr;
     }

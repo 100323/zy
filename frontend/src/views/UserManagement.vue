@@ -1,6 +1,6 @@
 <template>
   <div class="user-management-page">
-    <el-card>
+    <el-card class="management-card">
       <template #header>
         <div class="card-header">
           <span>用户管理</span>
@@ -8,7 +8,7 @@
         </div>
       </template>
 
-      <el-table :data="users" v-loading="loading" stripe>
+      <el-table :data="users" v-loading="loading" stripe class="user-table">
         <el-table-column prop="username" label="用户名" min-width="120" />
         <el-table-column label="角色" width="100">
           <template #default="{ row }">
@@ -75,8 +75,9 @@
     <el-dialog
       v-model="dialogVisible"
       :title="isEditing ? '编辑用户' : '新增用户'"
-      width="520px"
+      width="min(520px, 100%)"
       destroy-on-close
+      class="responsive-dialog user-edit-dialog"
     >
       <el-form ref="formRef" :model="form" :rules="rules" label-width="110px">
         <el-form-item label="用户名" prop="username">
@@ -146,9 +147,9 @@
 
     <el-dialog
       v-model="logDialogVisible"
-      width="760px"
+      width="min(760px, 100%)"
       destroy-on-close
-      class="user-log-dialog"
+      class="responsive-dialog user-log-dialog"
       :title="logDialogTitle"
     >
       <div class="log-filter-bar">
@@ -614,7 +615,9 @@ onMounted(() => {
 
 <style scoped>
 .user-management-page {
-  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 
 .card-header {
@@ -624,16 +627,29 @@ onMounted(() => {
   gap: 12px;
 }
 
+.management-card {
+  :deep(.el-card__header) {
+    border-bottom: 1px solid rgba(138, 151, 185, 0.14);
+    padding-bottom: 14px;
+  }
+}
+
+.user-table {
+  :deep(.el-button + .el-button) {
+    margin-left: 2px;
+  }
+}
+
 .time-window {
   line-height: 1.6;
-  color: #606266;
+  color: var(--text-secondary);
 }
 
 .form-tip {
   margin-top: 6px;
   line-height: 1.5;
   font-size: 12px;
-  color: #909399;
+  color: var(--text-tertiary);
 }
 
 .limit-setting {
@@ -643,7 +659,7 @@ onMounted(() => {
 }
 
 .limit-setting-text {
-  color: #606266;
+  color: var(--text-secondary);
 }
 
 .log-filter-bar {
@@ -651,11 +667,16 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   margin-bottom: 16px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(91, 124, 255, 0.05);
+  border: 1px solid rgba(138, 151, 185, 0.14);
 }
 
 .log-filter-label {
   flex-shrink: 0;
-  color: #606266;
+  color: var(--text-secondary);
+  font-weight: 600;
 }
 
 .log-account-select {
@@ -668,17 +689,17 @@ onMounted(() => {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
-  color: #606266;
+  color: var(--text-secondary);
 }
 
 .account-name {
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .log-count {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-tertiary);
 }
 
 .log-items {
@@ -690,10 +711,11 @@ onMounted(() => {
 }
 
 .log-item {
-  padding: 12px 14px;
-  border: 1px solid #ebeef5;
-  border-radius: 10px;
-  background: #fff;
+  padding: 14px 16px;
+  border: 1px solid rgba(138, 151, 185, 0.14);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 8px 20px rgba(24, 39, 75, 0.06);
 }
 
 .log-item-header {
@@ -713,30 +735,53 @@ onMounted(() => {
 
 .log-time {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-tertiary);
 }
 
 .task-type {
   font-weight: 500;
-  color: #606266;
+  color: var(--text-secondary);
 }
 
 .log-message {
   line-height: 1.6;
-  color: #303133;
+  color: var(--text-primary);
   word-break: break-word;
 }
 
-@media (max-width: 768px) {
-  .user-management-page {
-    padding: 12px;
-  }
+:deep(.user-edit-dialog .el-dialog__body) {
+  padding-top: 6px;
+}
 
+:deep(.user-edit-dialog .el-form-item__label) {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+:deep(.user-log-dialog .el-dialog__body) {
+  padding-top: 10px;
+}
+
+@media (max-width: 768px) {
   .log-filter-bar,
   .account-summary,
   .log-item-header {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .card-header {
+    align-items: stretch;
+  }
+
+  .limit-setting {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 480px) {
+  .log-item {
+    padding: 12px 14px;
   }
 }
 </style>

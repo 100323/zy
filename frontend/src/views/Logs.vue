@@ -1,6 +1,6 @@
 <template>
   <div class="logs-page">
-    <el-card>
+    <el-card class="logs-card">
       <template #header>
         <div class="card-header">
           <div>
@@ -240,6 +240,10 @@ onMounted(async () => {
 
 <style lang="scss" scoped>
 .logs-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+
   .card-header {
     display: flex;
     justify-content: space-between;
@@ -247,19 +251,25 @@ onMounted(async () => {
     gap: 16px;
   }
 
+  .logs-card {
+    :deep(.el-card__header) {
+      border-bottom: 1px solid rgba(138, 151, 185, 0.14);
+      padding-bottom: 14px;
+    }
+  }
+
   :deep(.el-card__header) {
-    border-bottom: none;
     padding-bottom: 8px;
   }
 
   :deep(.el-card__body) {
-    padding-top: 12px;
+    padding-top: 16px;
   }
 
   .header-tip {
     margin-top: 4px;
     font-size: 12px;
-    color: #909399;
+    color: var(--text-tertiary);
   }
 
   .filter-bar {
@@ -268,11 +278,16 @@ onMounted(async () => {
     gap: 12px;
     margin-bottom: 20px;
     flex-wrap: wrap;
+    padding: 14px;
+    border-radius: 18px;
+    background: rgba(91, 124, 255, 0.05);
+    border: 1px solid rgba(138, 151, 185, 0.14);
   }
 
   .filter-label {
     font-size: 14px;
-    color: #606266;
+    color: var(--text-secondary);
+    font-weight: 600;
     white-space: nowrap;
   }
 
@@ -293,12 +308,12 @@ onMounted(async () => {
   .account-name {
     font-size: 16px;
     font-weight: 600;
-    color: #303133;
+    color: var(--text-primary);
   }
 
   .log-count {
     font-size: 13px;
-    color: #909399;
+    color: var(--text-tertiary);
   }
 
   .log-items {
@@ -308,10 +323,11 @@ onMounted(async () => {
   }
 
   .log-item {
-    border: 1px solid #ebeef5;
-    border-radius: 10px;
+    border: 1px solid rgba(138, 151, 185, 0.14);
+    border-radius: 16px;
     padding: 14px 16px;
-    background: #fff;
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: 0 8px 20px rgba(24, 39, 75, 0.06);
   }
 
   .log-item-header {
@@ -334,14 +350,24 @@ onMounted(async () => {
   .log-time,
   .task-type {
     font-size: 13px;
-    color: #909399;
+    color: var(--text-tertiary);
   }
 
   .log-message {
-    color: #303133;
+    color: var(--text-primary);
     line-height: 1.7;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  @media (max-width: 768px) {
+    .card-header,
+    .filter-bar,
+    .account-summary,
+    .log-item-header {
+      flex-direction: column;
+      align-items: stretch;
+    }
   }
 }
 </style>
