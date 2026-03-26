@@ -1,10 +1,10 @@
 <template>
   <div class="tasks-page">
-    <n-card>
+    <n-card class="tasks-overview-card">
       <template #header>
         <div class="card-header">
           <span>任务配置</span>
-          <n-space>
+          <n-space class="header-actions">
             <n-button @click="refreshTasks">
               <template #icon>
                 <n-icon><Refresh /></n-icon>
@@ -18,7 +18,7 @@
         </div>
       </template>
 
-      <n-alert type="info" style="margin-bottom: 16px">
+      <n-alert type="info" class="tasks-tip">
         选择账号后，可单独配置该账号的任务执行参数。每个账号的配置独立保存。
       </n-alert>
 
@@ -28,7 +28,7 @@
           v-model:value="selectedAccountId"
           :options="accountOptions"
           placeholder="请选择要配置的账号"
-          style="width: 300px"
+          class="account-select"
           @update:value="handleAccountChange"
         />
         <n-tag v-if="selectedAccountId" type="success" size="small">
@@ -38,7 +38,7 @@
     </n-card>
 
     <template v-if="selectedAccountId">
-      <n-card style="margin-top: 16px">
+      <n-card class="tasks-content-card">
         <n-tabs type="line" animated>
           <n-tab-pane name="schedule" tab="定时任务">
             <div class="schedule-section">
@@ -56,7 +56,7 @@
                 </n-space>
               </div>
 
-              <n-alert type="info" style="margin-bottom: 16px">
+              <n-alert type="info" class="schedule-tip">
                 设置该账号每日任务的执行时间，系统将在指定时间自动执行所有启用的任务
               </n-alert>
 
@@ -119,107 +119,6 @@
               @save="handleConfigSave"
             />
           </n-tab-pane>
-
-          <n-tab-pane name="quick" tab="快捷设置">
-            <div class="quick-settings">
-              <n-grid :cols="2" :x-gap="16">
-                <n-gi>
-                  <n-card title="阵容配置" size="small">
-                    <n-space vertical>
-                      <div class="setting-row">
-                        <span>竞技场阵容</span>
-                        <n-select
-                          v-model:value="currentAccountConfig.settings.arenaFormation"
-                          :options="formationOptions"
-                          size="small"
-                          style="width: 120px"
-                        />
-                      </div>
-                      <div class="setting-row">
-                        <span>爬塔阵容</span>
-                        <n-select
-                          v-model:value="currentAccountConfig.settings.towerFormation"
-                          :options="formationOptions"
-                          size="small"
-                          style="width: 120px"
-                        />
-                      </div>
-                      <div class="setting-row">
-                        <span>BOSS阵容</span>
-                        <n-select
-                          v-model:value="currentAccountConfig.settings.bossFormation"
-                          :options="formationOptions"
-                          size="small"
-                          style="width: 120px"
-                        />
-                      </div>
-                      <div class="setting-row">
-                        <span>BOSS次数</span>
-                        <n-select
-                          v-model:value="currentAccountConfig.settings.bossTimes"
-                          :options="bossTimesOptions"
-                          size="small"
-                          style="width: 120px"
-                        />
-                      </div>
-                    </n-space>
-                  </n-card>
-                </n-gi>
-
-                <n-gi>
-                  <n-card title="功能开关" size="small">
-                    <n-space vertical>
-                      <div class="setting-row">
-                        <span>领罐子</span>
-                        <n-switch v-model:value="currentAccountConfig.settings.claimBottle" />
-                      </div>
-                      <div class="setting-row">
-                        <span>领挂机</span>
-                        <n-switch v-model:value="currentAccountConfig.settings.claimHangUp" />
-                      </div>
-                      <div class="setting-row">
-                        <span>竞技场</span>
-                        <n-switch v-model:value="currentAccountConfig.settings.arenaEnable" />
-                      </div>
-                      <div class="setting-row">
-                        <span>开宝箱</span>
-                        <n-switch v-model:value="currentAccountConfig.settings.openBox" />
-                      </div>
-                      <div class="setting-row">
-                        <span>领取邮件</span>
-                        <n-switch v-model:value="currentAccountConfig.settings.claimEmail" />
-                      </div>
-                      <div class="setting-row">
-                        <span>黑市采购</span>
-                        <n-switch v-model:value="currentAccountConfig.settings.blackMarketPurchase" />
-                      </div>
-                      <div class="setting-row">
-                        <span>付费招募</span>
-                        <n-switch v-model:value="currentAccountConfig.settings.payRecruit" />
-                      </div>
-                    </n-space>
-                  </n-card>
-                </n-gi>
-              </n-grid>
-
-              <n-card title="操作" size="small" style="margin-top: 16px">
-                <n-space>
-                  <n-button type="primary" @click="enableAllTasks">
-                    启用所有任务
-                  </n-button>
-                  <n-button @click="disableAllTasks">
-                    禁用所有任务
-                  </n-button>
-                  <n-button type="warning" @click="resetToDefault">
-                    恢复默认配置
-                  </n-button>
-                  <n-button type="error" @click="copyToAllAccounts">
-                    复制配置到所有账号
-                  </n-button>
-                </n-space>
-              </n-card>
-            </div>
-          </n-tab-pane>
         </n-tabs>
       </n-card>
     </template>
@@ -240,8 +139,6 @@ import {
   taskGroupDefinitions,
   defaultTaskConfigs,
   defaultSettings,
-  formationOptions,
-  bossTimesOptions,
 } from '@/utils/batch/constants';
 
 const message = useMessage();
@@ -760,42 +657,6 @@ const applyDailyTime = () => {
   message.success('已应用到该账号所有启用的任务');
 };
 
-const enableAllTasks = () => {
-  Object.keys(currentAccountConfig.value.taskConfigs).forEach((key) => {
-    currentAccountConfig.value.taskConfigs[key].enabled = true;
-  });
-  message.success('已启用所有任务');
-};
-
-const disableAllTasks = () => {
-  Object.keys(currentAccountConfig.value.taskConfigs).forEach((key) => {
-    currentAccountConfig.value.taskConfigs[key].enabled = false;
-  });
-  message.success('已禁用所有任务');
-};
-
-const resetToDefault = () => {
-  currentAccountConfig.value = createDefaultAccountConfig();
-  message.success('已恢复默认配置');
-};
-
-const copyToAllAccounts = () => {
-  if (!selectedAccountId.value) {
-    message.warning('请先选择账号');
-    return;
-  }
-
-  const configCopy = JSON.parse(JSON.stringify(currentAccountConfig.value));
-  accountStore.accounts.forEach((account) => {
-    if (account.id !== selectedAccountId.value) {
-      allAccountsConfig.value[account.id] = JSON.parse(JSON.stringify(configCopy));
-    }
-  });
-
-  saveAllToLocalStorage();
-  message.success(`已复制配置到 ${Math.max(accountStore.accounts.length - 1, 0)} 个账号`);
-};
-
 const handleConfigSave = (configs) => {
   currentAccountConfig.value.taskConfigs = configs;
   saveCurrentConfig();
@@ -1016,13 +877,41 @@ onMounted(() => {
 
 <style lang="scss" scoped>
 .tasks-page {
-  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 
   .card-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
   }
+}
+
+.tasks-overview-card,
+.tasks-content-card {
+  :deep(.n-card-header) {
+    padding-bottom: 14px;
+    border-bottom: 1px solid rgba(138, 151, 185, 0.14);
+  }
+
+  :deep(.n-card__content) {
+    padding-top: 18px;
+  }
+}
+
+.header-actions {
+  :deep(.n-button) {
+    min-width: 128px;
+  }
+}
+
+.tasks-tip,
+.schedule-tip {
+  margin-bottom: 16px;
+  border-radius: 18px;
 }
 
 .account-selector {
@@ -1030,23 +919,33 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   padding: 16px;
-  background: var(--bg-secondary);
-  border-radius: 8px;
+  background: rgba(91, 124, 255, 0.05);
+  border: 1px solid rgba(138, 151, 185, 0.14);
+  border-radius: 18px;
+  flex-wrap: wrap;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.account-select {
+  width: 320px;
+  max-width: 100%;
 }
 
 .schedule-section {
   .schedule-header {
     margin-bottom: 16px;
-    padding: 12px;
-    background: var(--bg-secondary);
-    border-radius: 8px;
+    padding: 14px 16px;
+    background: rgba(91, 124, 255, 0.05);
+    border: 1px solid rgba(138, 151, 185, 0.14);
+    border-radius: 18px;
   }
 }
 
 .scheduled-tasks-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   max-height: 500px;
   overflow-y: auto;
 }
@@ -1055,33 +954,118 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px;
-  background: var(--bg-secondary);
-  border-radius: 8px;
-  border: 1px solid var(--border-light);
+  gap: 12px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.72);
+  border-radius: 18px;
+  border: 1px solid rgba(138, 151, 185, 0.14);
+  box-shadow: 0 8px 20px rgba(24, 39, 75, 0.06);
 
   .task-main {
     display: flex;
     align-items: center;
     gap: 12px;
+    min-width: 0;
 
     .task-name {
-      font-weight: 500;
+      font-weight: 600;
+      color: var(--text-primary);
     }
+  }
+
+  .task-time {
+    flex-shrink: 0;
   }
 }
 
-.quick-settings {
-  .setting-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 0;
-    border-bottom: 1px solid var(--border-light);
+:deep(.n-tabs-nav) {
+  margin-bottom: 12px;
+}
 
-    &:last-child {
-      border-bottom: none;
+:deep(.n-tabs-tab) {
+  border-radius: 999px;
+  padding: 10px 16px !important;
+  color: var(--text-secondary);
+}
+
+:deep(.n-tabs-tab--active) {
+  background: rgba(91, 124, 255, 0.1);
+  color: var(--primary-color);
+  font-weight: 700;
+}
+
+:deep(.n-button) {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(138, 151, 185, 0.16);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+:deep(.n-button:hover) {
+  border-color: rgba(91, 124, 255, 0.28);
+  color: var(--primary-color);
+}
+
+:deep(.n-button--primary-type) {
+  background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 12px 24px rgba(91, 124, 255, 0.2);
+}
+
+:deep(.n-button--primary-type:hover) {
+  color: #fff;
+  border-color: transparent;
+}
+
+:deep(.n-select),
+:deep(.n-time-picker),
+:deep(.n-input-number),
+:deep(.n-base-selection) {
+  max-width: 100%;
+}
+
+@media (max-width: 768px) {
+  .tasks-page {
+    gap: 14px;
+  }
+
+  .card-header,
+  .account-selector,
+  .schedule-header,
+  .scheduled-task-item {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .header-actions {
+    width: 100%;
+
+    :deep(.n-space) {
+      width: 100%;
+      justify-content: stretch;
     }
+
+    :deep(.n-button) {
+      width: 100%;
+      min-width: 0;
+    }
+  }
+
+  .scheduled-tasks-list {
+    max-height: none;
+  }
+
+  .scheduled-task-item .task-time {
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .account-selector,
+  .schedule-section .schedule-header,
+  .scheduled-task-item {
+    padding: 12px 14px;
   }
 }
 </style>

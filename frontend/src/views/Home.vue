@@ -148,7 +148,7 @@
 
     <el-card v-if="stats.accountCount === 0" class="welcome-card">
       <div class="welcome-content">
-        <h2>欢迎使用 XYZW 管理系统</h2>
+        <h2>欢迎使用汤姆之王</h2>
         <p>请先添加游戏账号开始使用</p>
         <el-button type="primary" size="large" @click="$router.push('/tokens')">
           添加账号

@@ -3,8 +3,8 @@
     <el-container>
       <el-aside width="220px" class="sidebar">
         <div class="logo">
-          <img src="/icons/xiaoyugan.png" alt="Logo">
-          <span>XYZW</span>
+          <img src="/icons/tom_king.jpg" alt="汤姆之王">
+          <span>汤姆之王</span>
         </div>
         
         <el-menu
@@ -77,8 +77,8 @@
     >
       <div class="mobile-drawer-content">
         <div class="mobile-drawer-logo">
-          <img src="/icons/xiaoyugan.png" alt="Logo">
-          <span>XYZW</span>
+          <img src="/icons/tom_king.jpg" alt="汤姆之王">
+          <span>汤姆之王</span>
         </div>
 
         <el-menu
@@ -125,7 +125,7 @@ const authStore = useAuthStore();
 const mobileMenuOpen = ref(false);
 
 const activeMenu = computed(() => route.path);
-const pageTitle = computed(() => route.meta?.title || 'XYZW 管理后台');
+const pageTitle = computed(() => route.meta?.title || '汤姆之王');
 const isAdmin = computed(() => authStore.user?.role === 'admin');
 const menuItems = [
   { index: '/', label: '首页', icon: HomeFilled },

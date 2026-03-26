@@ -2,8 +2,8 @@
   <div class="login-container">
     <div class="login-card">
       <div class="login-header">
-        <img src="/icons/xiaoyugan.png" alt="Logo" class="logo">
-        <h1>XYZW 管理后台</h1>
+        <img src="/icons/tom_king.jpg" alt="汤姆之王" class="logo">
+        <h1>汤姆之王</h1>
       </div>
       
       <el-tabs v-model="activeTab" class="login-tabs">

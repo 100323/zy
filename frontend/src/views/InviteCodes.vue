@@ -210,7 +210,25 @@ const batchGenerate = async () => {
 
 const copyCode = async (code) => {
   try {
-    await navigator.clipboard.writeText(code);
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(code);
+    } else {
+      const textArea = document.createElement('textarea');
+      textArea.value = code;
+      textArea.setAttribute('readonly', 'readonly');
+      textArea.style.position = 'fixed';
+      textArea.style.opacity = '0';
+      textArea.style.pointerEvents = 'none';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      textArea.setSelectionRange(0, textArea.value.length);
+      const copied = document.execCommand('copy');
+      document.body.removeChild(textArea);
+      if (!copied) {
+        throw new Error('execCommand copy failed');
+      }
+    }
     ElMessage.success('邀请码已复制到剪贴板');
   } catch {
     ElMessage.error('复制失败');
