@@ -30,7 +30,16 @@ export const config = {
   scheduler: {
     maxConcurrentAccounts: Number(process.env.MAX_CONCURRENT_ACCOUNTS) || 2,
     dailyCatchupMaxConcurrency: Number(process.env.DAILY_CATCHUP_MAX_CONCURRENCY) || 2,
-    staggerWindowMs: Number(process.env.SCHEDULER_STAGGER_WINDOW_MS) || 180000,
+    staggerWindowMs: Number(process.env.SCHEDULER_STAGGER_WINDOW_MS) || 600000,
+    reusableConnection: {
+      maxIdleMs: Number(process.env.WS_REUSE_MAX_IDLE_MS) || 600000,
+      maxAgeMs: Number(process.env.WS_REUSE_MAX_AGE_MS) || 1800000,
+    },
+    wsReconnectRetry: {
+      maxRetries: Number(process.env.WS_RECONNECT_MAX_RETRIES) || 2,
+      baseDelayMs: Number(process.env.WS_RECONNECT_BASE_DELAY_MS) || 1500,
+      maxDelayMs: Number(process.env.WS_RECONNECT_MAX_DELAY_MS) || 5000,
+    },
     sensitiveTaskThrottleMs: {
       HANGUP_ADD_TIME: Number(process.env.HANGUP_ADD_TIME_THROTTLE_MS) || 3000,
       LEGACY_CLAIM: Number(process.env.LEGACY_CLAIM_THROTTLE_MS) || 4000,

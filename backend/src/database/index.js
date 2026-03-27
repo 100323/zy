@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS task_configs (
   enabled INTEGER DEFAULT 0,
   cron_expression TEXT,
   cron_is_customized INTEGER,
+  default_cron_version INTEGER,
   config_json TEXT,
   last_run_at DATETIME,
   next_run_at DATETIME,
@@ -244,6 +245,10 @@ function ensureTaskConfigSchema(db) {
 
     if (!columns.has('cron_is_customized')) {
       db.run('ALTER TABLE task_configs ADD COLUMN cron_is_customized INTEGER');
+    }
+
+    if (!columns.has('default_cron_version')) {
+      db.run('ALTER TABLE task_configs ADD COLUMN default_cron_version INTEGER');
     }
   } catch (error) {
     console.warn('⚠️ 检查 task_configs 表结构失败:', error?.message || error);

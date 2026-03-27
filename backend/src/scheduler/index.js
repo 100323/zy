@@ -36,6 +36,7 @@ import { warmupGameClient } from '../utils/wsWarmup.js';
 import { getRefreshedTokenSessionFromStoredBin } from '../utils/accountTokenRefresh.js';
 import {
   getSensitiveTaskRetryConfig,
+  getWsReconnectRetryConfig,
   isTooFastError,
   sleep,
   waitForScheduledTaskStagger,
@@ -76,9 +77,40 @@ const DAILY_REWARD_DIRTY_TASKS = new Set([
   'BLACK_MARKET'
 ]);
 const SENSITIVE_TASK_TYPES = new Set(['HANGUP_ADD_TIME', 'LEGACY_CLAIM']);
-const DAILY_CATCHUP_CRON = '0 19 * * *';
+const DAILY_CATCHUP_CRON = '15 19 * * *';
 const DAILY_CATCHUP_CUTOFF_HOUR = 19;
 const DEFAULT_DAILY_CATCHUP_CONCURRENCY = 2;
+const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function getShanghaiDateParts(date = new Date()) {
+  const shifted = new Date(date.getTime() + SHANGHAI_OFFSET_MS);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+    minute: shifted.getUTCMinutes(),
+    second: shifted.getUTCSeconds(),
+    dayOfWeek: shifted.getUTCDay(),
+  };
+}
+
+function formatShanghaiLocalDateTime(parts) {
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)} ${pad2(parts.hour)}:${pad2(parts.minute)}:${pad2(parts.second ?? 0)}`;
+}
+
+function toShanghaiLocalDateTimeString(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return formatShanghaiLocalDateTime(getShanghaiDateParts(date));
+}
 
 function buildWsTokenPayload(token) {
   const raw = typeof token === 'string' ? token.trim() : '';
@@ -166,9 +198,10 @@ function getCronExecutionSlotsForToday(cronExpression, now = new Date()) {
   const daysOfMonth = parseCronField(dayOfMonthField, 1, 31);
   const months = parseCronField(monthField, 1, 12);
   const daysOfWeek = parseCronField(dayOfWeekField, 0, 7).map((value) => (value === 7 ? 0 : value));
-  const todayMonth = now.getMonth() + 1;
-  const todayDayOfMonth = now.getDate();
-  const todayDayOfWeek = now.getDay();
+  const shanghaiParts = getShanghaiDateParts(now);
+  const todayMonth = shanghaiParts.month;
+  const todayDayOfMonth = shanghaiParts.day;
+  const todayDayOfWeek = shanghaiParts.dayOfWeek;
 
   if (
     !minutes.length ||
@@ -194,19 +227,10 @@ function getCronExecutionSlotsForToday(cronExpression, now = new Date()) {
   return pairs.sort((a, b) => (a.hour - b.hour) || (a.minute - b.minute));
 }
 
-function shouldIncludeTaskInDailyCatchup(task, cutoffHour = DAILY_CATCHUP_CUTOFF_HOUR, now = new Date()) {
-  const cronExpression = String(task?.cron_expression || '').trim();
-  if (!cronExpression) return false;
-
-  const pairs = getCronExecutionSlotsForToday(cronExpression, now);
-  if (pairs.length === 0) return false;
-
-  return pairs.some(({ hour }) => hour < cutoffHour);
-}
-
 function getTodayTaskLogSnapshots() {
   const rows = all(
-    `SELECT account_id, task_type, status, message, created_at
+    `SELECT account_id, task_type, status, message, created_at,
+            datetime(created_at, '+8 hours') AS local_created_at
        FROM task_logs
       WHERE datetime(created_at, '+8 hours') >= date('now', '+8 hours')
         AND datetime(created_at, '+8 hours') < datetime(date('now', '+8 hours'), '+1 day')
@@ -223,33 +247,79 @@ function getTodayTaskLogSnapshots() {
   return snapshotMap;
 }
 
+function getLatestDueSlotForToday(task, now = new Date()) {
+  const cronExpression = String(task?.cron_expression || '').trim();
+  if (!cronExpression) {
+    return null;
+  }
+
+  const pairs = getCronExecutionSlotsForToday(cronExpression, now);
+  if (pairs.length === 0) {
+    return null;
+  }
+
+  const catchupGraceMs = Math.max(0, Number(config?.scheduler?.staggerWindowMs) || 0);
+  const readyBoundary = new Date(now.getTime() - catchupGraceMs);
+  const nowLocal = formatShanghaiLocalDateTime(getShanghaiDateParts(readyBoundary));
+  const shanghaiParts = getShanghaiDateParts(now);
+  let latestSlot = null;
+
+  for (const { hour, minute } of pairs) {
+    const slot = `${shanghaiParts.year}-${pad2(shanghaiParts.month)}-${pad2(shanghaiParts.day)} ${pad2(hour)}:${pad2(minute)}:00`;
+    if (slot <= nowLocal && (!latestSlot || slot > latestSlot)) {
+      latestSlot = slot;
+    }
+  }
+
+  return latestSlot;
+}
+
 function collectDailyCatchupTasks(tasks, cutoffHour = DAILY_CATCHUP_CUTOFF_HOUR, now = new Date()) {
   const todayLogSnapshots = getTodayTaskLogSnapshots();
   const missingTasks = [];
   const failedTasks = [];
 
   for (const task of tasks) {
-    if (!shouldIncludeTaskInDailyCatchup(task, cutoffHour, now)) {
-      continue;
-    }
-
     const key = `${task.account_id}_${task.task_type}`;
     const latestLog = todayLogSnapshots.get(key);
+    const latestDueSlot = getLatestDueSlotForToday(task, now);
+    if (!latestDueSlot) {
+      continue;
+    }
+    const latestLogAt = latestLog?.local_created_at || null;
+    const lastRunAt = toShanghaiLocalDateTimeString(task?.last_run_at || null);
+    const latestEvidenceAt = [latestLogAt, lastRunAt]
+      .filter(Boolean)
+      .sort()
+      .at(-1) || null;
 
-    if (!latestLog) {
+    if (!latestEvidenceAt) {
       missingTasks.push({
         ...task,
         catchupReason: 'missing_today_log',
+        catchupExpectedAt: latestDueSlot,
       });
       continue;
     }
 
-    if (String(latestLog.status || '') === 'error') {
+    if (latestDueSlot && latestEvidenceAt < latestDueSlot) {
+      missingTasks.push({
+        ...task,
+        catchupReason: 'missing_latest_due_slot',
+        catchupExpectedAt: latestDueSlot,
+        catchupLastMessage: latestLog?.message || '',
+        catchupLastLogAt: latestLogAt,
+      });
+      continue;
+    }
+
+    if (String(latestLog?.status || '') === 'error') {
       failedTasks.push({
         ...task,
         catchupReason: 'latest_error',
+        catchupExpectedAt: latestDueSlot,
         catchupLastMessage: latestLog.message || '',
-        catchupLastLogAt: latestLog.created_at || null,
+        catchupLastLogAt: latestLogAt,
       });
     }
   }
@@ -290,6 +360,7 @@ async function runCatchupTask(task) {
     accountName: task.account_name || task.name || null,
     taskType: task.task_type || null,
     catchupReason: task.catchupReason,
+    expectedAt: task.catchupExpectedAt || null,
     lastMessage: task.catchupLastMessage || null,
     lastLogAt: task.catchupLastLogAt || null,
   });
@@ -574,6 +645,12 @@ export function scheduleTask(task) {
     const cronExpression = task.cron_expression;
     const job = cron.schedule(cronExpression, async () => {
       try {
+        console.log('⏰ 定时任务命中', {
+          accountId: task.account_id ?? null,
+          accountName: task.account_name || task.name || null,
+          taskType: task.task_type || null,
+          cronExpression,
+        });
         await waitForScheduledTaskStagger({
           scope: 'scheduler',
           taskId: task.id ?? null,
@@ -740,9 +817,10 @@ async function executeTaskWithFlowControl({
   reconnect,
 }) {
   const retryConfig = getSensitiveTaskRetryConfig();
+  const wsRetryConfig = getWsReconnectRetryConfig();
   const allowTooFastRetry = SENSITIVE_TASK_TYPES.has(taskType);
   let currentClient = client;
-  let wsRetried = false;
+  let wsRetryCount = 0;
   let tooFastRetryCount = 0;
 
   while (true) {
@@ -754,8 +832,25 @@ async function executeTaskWithFlowControl({
       }, async () => await runTaskByType(currentClient, taskType, taskConfig));
       return { client: currentClient, result };
     } catch (error) {
-      if (isRetryableWsError(error) && !wsRetried) {
-        wsRetried = true;
+      if (isRetryableWsError(error) && wsRetryCount < wsRetryConfig.maxRetries) {
+        wsRetryCount += 1;
+        const retryDelayMs = Math.min(
+          wsRetryConfig.maxDelayMs,
+          wsRetryConfig.baseDelayMs * (2 ** (wsRetryCount - 1))
+        );
+        console.warn('🔁 定时任务触发 WebSocket 重连重试', {
+          accountId,
+          accountName,
+          taskType,
+          source,
+          retry: wsRetryCount,
+          maxRetries: wsRetryConfig.maxRetries,
+          retryDelayMs,
+          error: normalizeErrorMessage(error),
+        });
+        if (retryDelayMs > 0) {
+          await sleep(retryDelayMs);
+        }
         currentClient = await reconnect();
         continue;
       }
@@ -1005,11 +1100,54 @@ async function flushDailyRewardClaim(accountId, reason = 'debounced') {
 }
 
 function getDateKey() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  const parts = getShanghaiDateParts(new Date());
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
+}
+
+function parseTimestamp(value) {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function evaluateReusableClient(client) {
+  if (!client?.isSocketOpen?.()) {
+    return {
+      reusable: false,
+      reason: 'readyState 非 OPEN 或 connected 标记失效',
+    };
+  }
+
+  const now = Date.now();
+  const maxIdleMs = Number(config?.scheduler?.reusableConnection?.maxIdleMs) || 600000;
+  const maxAgeMs = Number(config?.scheduler?.reusableConnection?.maxAgeMs) || 1800000;
+  const openedAt = parseTimestamp(client?.lastConnectMeta?.openedAt || client?.lastConnectMeta?.startedAt);
+  const lastMessageAt = parseTimestamp(client?.lastMessageAt);
+
+  if (lastMessageAt && maxIdleMs > 0) {
+    const idleMs = now - lastMessageAt;
+    if (idleMs > maxIdleMs) {
+      return {
+        reusable: false,
+        reason: `连接空闲过久(${idleMs}ms > ${maxIdleMs}ms)`,
+      };
+    }
+  }
+
+  if (openedAt && maxAgeMs > 0) {
+    const ageMs = now - openedAt;
+    if (ageMs > maxAgeMs) {
+      return {
+        reusable: false,
+        reason: `连接存活过久(${ageMs}ms > ${maxAgeMs}ms)`,
+      };
+    }
+  }
+
+  return {
+    reusable: true,
+    reason: null,
+  };
 }
 
 function forceDisconnectClient(accountId) {
@@ -1034,17 +1172,21 @@ function forceDisconnectClient(accountId) {
 async function ensureConnectedClient(accountId, accountName, tokenCandidates, roleId = null, wsUrl = '', extraContext = {}) {
   const existing = activeConnections.get(accountId);
   if (existing?.isSocketOpen?.()) {
-    console.log('♻️ 复用已有WebSocket连接', {
-      accountId,
-      accountName,
-      roleId: roleId ?? null,
-      importMethod: extraContext.importMethod || null,
-      updatedAt: extraContext.updatedAt || null,
-      connection: existing.getConnectionStateSummary?.() || null,
-    });
-    return existing;
-  }
-  if (existing) {
+    const reuseCheck = evaluateReusableClient(existing);
+    if (reuseCheck.reusable) {
+      console.log('♻️ 复用已有WebSocket连接', {
+        accountId,
+        accountName,
+        roleId: roleId ?? null,
+        importMethod: extraContext.importMethod || null,
+        updatedAt: extraContext.updatedAt || null,
+        connection: existing.getConnectionStateSummary?.() || null,
+      });
+      return existing;
+    }
+
+    discardInactiveClient(accountId, accountName, existing, reuseCheck.reason);
+  } else if (existing) {
     discardInactiveClient(accountId, accountName, existing, 'readyState 非 OPEN 或 connected 标记失效');
   }
 

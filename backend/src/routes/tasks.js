@@ -7,6 +7,8 @@ const router = Router();
 
 router.use(authMiddleware);
 
+export const CURRENT_DEFAULT_CRON_VERSION = 2;
+
 export const TASK_TYPES = {
   SIGN_IN: { name: '每日签到', cron: '0 8 * * *', group: 'daily' },
   LEGION_SIGN: { name: '军团签到', cron: '0 8 * * *', group: 'daily' },
@@ -26,14 +28,14 @@ export const TASK_TYPES = {
   MAIL_CLAIM: { name: '领取邮件', cron: '0 8 * * *', group: 'daily' },
   HANGUP_CLAIM: { name: '领取挂机奖励', cron: '0 */8 * * *', group: 'daily' },
   STUDY: { name: '答题', cron: '1 12 * * *', group: 'daily' },
-  HANGUP_ADD_TIME: { name: '一键加钟', cron: '0 */3 * * *', group: 'daily' },
+  HANGUP_ADD_TIME: { name: '一键加钟', cron: '11 */3 * * *', group: 'daily' },
   BOTTLE_RESET: { name: '重置罐子', cron: '0 */7 * * *', group: 'daily' },
   BOTTLE_CLAIM: { name: '领取罐子', cron: '13 12 * * *', group: 'daily' },
   CAR_SEND: { name: '智能发车', cron: '7 12 * * *', group: 'daily' },
   CAR_CLAIM: { name: '一键收车', cron: '1 18 * * *', group: 'daily' },
   BLACK_MARKET: { name: '黑市采购', cron: '4 12 * * *', group: 'daily' },
   TREASURE_CLAIM: { name: '珍宝阁领取', cron: '1 0 * * *', group: 'daily' },
-  LEGACY_CLAIM: { name: '残卷收取', cron: '0 */6 * * *', group: 'daily' },
+  LEGACY_CLAIM: { name: '残卷收取', cron: '23 */6 * * *', group: 'daily' },
   WELFARE_CLAIM: { name: '福利奖励领取', cron: '4 12 * * *', group: 'daily' },
   DAILY_TASK_CLAIM: { name: '每日任务奖励领取', cron: '4 12 * * *', group: 'daily' },
   DREAM: { name: '梦境', cron: '10 12 * * *', group: 'dungeon' },
@@ -46,6 +48,8 @@ export const TASK_TYPES = {
 };
 
 export const LEGACY_DEFAULT_TASK_CRONS = {
+  HANGUP_ADD_TIME: '0 */3 * * *',
+  LEGACY_CLAIM: '0 */6 * * *',
   ARENA: '1 12 * * *',
   TOWER: '1 12 * * *',
   WEIRD_TOWER: '1 12 * * *',
@@ -126,6 +130,15 @@ export const DEFAULT_TASK_CONFIG_SEEDS = {
   GENIE_SWEEP: { enabled: true, config: {} },
 };
 
+function getTaskDefaultCronVersion(taskType) {
+  return TASK_TYPES[taskType] ? CURRENT_DEFAULT_CRON_VERSION : 1;
+}
+
+function getTaskDefaultConfigJson(taskType) {
+  const seed = DEFAULT_TASK_CONFIG_SEEDS[taskType] || {};
+  return JSON.stringify(seed.config || {});
+}
+
 function insertDefaultTaskConfig(targetDb, accountId, taskType, seed = {}) {
   const taskMeta = TASK_TYPES[taskType];
   if (!taskMeta) {
@@ -133,14 +146,15 @@ function insertDefaultTaskConfig(targetDb, accountId, taskType, seed = {}) {
   }
 
   targetDb.run(
-    `INSERT INTO task_configs (account_id, task_type, enabled, cron_expression, cron_is_customized, config_json)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO task_configs (account_id, task_type, enabled, cron_expression, cron_is_customized, default_cron_version, config_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
       accountId,
       taskType,
       seed.enabled ? 1 : 0,
       seed.cronExpression || taskMeta.cron,
       0,
+      getTaskDefaultCronVersion(taskType),
       JSON.stringify(seed.config || {}),
     ]
   );
@@ -214,14 +228,55 @@ export function rebalanceDefaultTaskCronExpressions() {
       continue;
     }
 
+    const seed = DEFAULT_TASK_CONFIG_SEEDS[taskType];
+    const defaultEnabled = seed?.enabled ? 1 : 0;
+    const defaultConfigJson = getTaskDefaultConfigJson(taskType);
+
     const eligibleRows = all(
-      'SELECT id FROM task_configs WHERE task_type = ? AND cron_expression = ? AND cron_is_customized = 0',
-      [taskType, legacyCron],
+      `SELECT id FROM task_configs
+        WHERE task_type = ?
+          AND cron_expression = ?
+          AND (
+            (
+              cron_is_customized = 0
+              AND default_cron_version IS NOT NULL
+              AND default_cron_version < ?
+            )
+            OR (
+              (
+                cron_is_customized = 0
+                OR cron_is_customized IS NULL
+              )
+              AND default_cron_version IS NULL
+              AND enabled = ?
+              AND COALESCE(config_json, '{}') = ?
+            )
+          )`,
+      [taskType, legacyCron, CURRENT_DEFAULT_CRON_VERSION, defaultEnabled, defaultConfigJson],
     );
 
     const unknownRows = all(
-      'SELECT id FROM task_configs WHERE task_type = ? AND cron_expression = ? AND cron_is_customized IS NULL',
-      [taskType, legacyCron],
+      `SELECT id FROM task_configs
+        WHERE task_type = ?
+          AND cron_expression = ?
+          AND (
+            (
+              (
+                cron_is_customized = 0
+                OR cron_is_customized IS NULL
+              )
+              AND default_cron_version IS NULL
+              AND (
+                enabled != ?
+                OR COALESCE(config_json, '{}') != ?
+              )
+            )
+            OR (
+              cron_is_customized != 0
+              AND default_cron_version IS NULL
+            )
+          )`,
+      [taskType, legacyCron, defaultEnabled, defaultConfigJson],
     );
 
     if (eligibleRows.length === 0 && unknownRows.length === 0) {
@@ -232,11 +287,35 @@ export function rebalanceDefaultTaskCronExpressions() {
       const nextRunAt = calculateNextRunAt(targetCron);
       run(
         `UPDATE task_configs
-            SET cron_expression = ?, next_run_at = ?, updated_at = CURRENT_TIMESTAMP
+            SET cron_expression = ?, next_run_at = ?, cron_is_customized = 0, default_cron_version = ?, updated_at = CURRENT_TIMESTAMP
           WHERE task_type = ?
             AND cron_expression = ?
-            AND cron_is_customized = 0`,
-        [targetCron, nextRunAt, taskType, legacyCron],
+            AND (
+              (
+                cron_is_customized = 0
+                AND default_cron_version IS NOT NULL
+                AND default_cron_version < ?
+              )
+              OR (
+                (
+                  cron_is_customized = 0
+                  OR cron_is_customized IS NULL
+                )
+                AND default_cron_version IS NULL
+                AND enabled = ?
+                AND COALESCE(config_json, '{}') = ?
+              )
+            )`,
+        [
+          targetCron,
+          nextRunAt,
+          CURRENT_DEFAULT_CRON_VERSION,
+          taskType,
+          legacyCron,
+          CURRENT_DEFAULT_CRON_VERSION,
+          defaultEnabled,
+          defaultConfigJson,
+        ],
       );
 
       updated += eligibleRows.length;
@@ -360,6 +439,7 @@ router.post('/account/:accountId', async (req, res) => {
     const cron = cronExpression || TASK_TYPES[taskType].cron;
     const configJson = config ? JSON.stringify(config) : null;
     const cronIsCustomized = Number(cron !== TASK_TYPES[taskType].cron);
+    const defaultCronVersion = cronIsCustomized ? null : getTaskDefaultCronVersion(taskType);
 
     if (existing) {
       const updateFields = [
@@ -375,6 +455,8 @@ router.post('/account/:accountId', async (req, res) => {
 
       updateFields.push('cron_is_customized = ?');
       updateValues.push(cronIsCustomized);
+      updateFields.push('default_cron_version = ?');
+      updateValues.push(defaultCronVersion);
 
       updateValues.push(existing.id);
 
@@ -394,9 +476,9 @@ router.post('/account/:accountId', async (req, res) => {
       });
     } else {
       const result = run(
-        `INSERT INTO task_configs (account_id, task_type, enabled, cron_expression, cron_is_customized, config_json) 
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [accountId, taskType, enabled ? 1 : 0, cron, cronIsCustomized, configJson]
+        `INSERT INTO task_configs (account_id, task_type, enabled, cron_expression, cron_is_customized, default_cron_version, config_json) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [accountId, taskType, enabled ? 1 : 0, cron, cronIsCustomized, defaultCronVersion, configJson]
       );
 
       const { checkAndRunDueTasks } = await import('../scheduler/index.js');
@@ -447,7 +529,10 @@ router.put('/:id', async (req, res) => {
       updateFields.push('cron_expression = ?');
       updateValues.push(cronExpression);
       updateFields.push('cron_is_customized = ?');
-      updateValues.push(Number(cronExpression !== TASK_TYPES[taskConfig.task_type]?.cron));
+      const cronIsCustomized = Number(cronExpression !== TASK_TYPES[taskConfig.task_type]?.cron);
+      updateValues.push(cronIsCustomized);
+      updateFields.push('default_cron_version = ?');
+      updateValues.push(cronIsCustomized ? null : getTaskDefaultCronVersion(taskConfig.task_type));
     }
     if (config !== undefined) {
       updateFields.push('config_json = ?');

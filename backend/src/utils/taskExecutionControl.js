@@ -70,3 +70,11 @@ export function getSensitiveTaskRetryConfig() {
     maxDelayMs: toPositiveNumber(config?.scheduler?.sensitiveTaskRetry?.maxDelayMs, 8000),
   };
 }
+
+export function getWsReconnectRetryConfig() {
+  return {
+    maxRetries: toPositiveNumber(config?.scheduler?.wsReconnectRetry?.maxRetries, 2),
+    baseDelayMs: toPositiveNumber(config?.scheduler?.wsReconnectRetry?.baseDelayMs, 1500),
+    maxDelayMs: toPositiveNumber(config?.scheduler?.wsReconnectRetry?.maxDelayMs, 5000),
+  };
+}
