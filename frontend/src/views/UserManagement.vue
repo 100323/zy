@@ -1,5 +1,41 @@
 <template>
   <div class="user-management-page">
+    <el-card class="management-card scheduler-settings-card">
+      <template #header>
+        <div class="card-header">
+          <div>
+            <span>调度并发设置</span>
+            <p class="header-subtitle">定时任务会按游戏账号批次执行，当前账号批次跑完后自动断开连接。</p>
+          </div>
+        </div>
+      </template>
+
+      <div class="scheduler-settings-panel" v-loading="schedulerSettingsLoading">
+        <div class="scheduler-setting-main">
+          <div class="scheduler-setting-copy">
+            <div class="scheduler-setting-title">并发账号数</div>
+            <div class="scheduler-setting-desc">
+              同时最多跑多少个游戏账号。建议从较小数值开始逐步压测。
+            </div>
+          </div>
+          <div class="scheduler-setting-control">
+            <el-input-number
+              v-model="schedulerMaxConcurrentAccounts"
+              :min="schedulerLimits.min"
+              :max="schedulerLimits.max"
+              controls-position="right"
+            />
+            <el-button type="primary" :loading="schedulerSettingsSaving" @click="saveSchedulerSettings">
+              保存
+            </el-button>
+          </div>
+        </div>
+        <div class="scheduler-setting-tip">
+          当前可配置范围：{{ schedulerLimits.min }} - {{ schedulerLimits.max }}，默认值：3。
+        </div>
+      </div>
+    </el-card>
+
     <el-card class="management-card">
       <template #header>
         <div class="card-header">
@@ -245,6 +281,13 @@ const selectedLogUser = ref(null);
 const logAccounts = ref([]);
 const selectedLogAccountId = ref(null);
 const userLogs = ref([]);
+const schedulerSettingsLoading = ref(false);
+const schedulerSettingsSaving = ref(false);
+const schedulerMaxConcurrentAccounts = ref(3);
+const schedulerLimits = reactive({
+  min: 1,
+  max: 20,
+});
 const BENIGN_LOG_KEYWORDS = [
   '活动未开放',
   '不在开启时间内',
@@ -407,6 +450,41 @@ const fetchUsers = async () => {
     }
   } finally {
     loading.value = false;
+  }
+};
+
+const fetchSchedulerSettings = async () => {
+  schedulerSettingsLoading.value = true;
+  try {
+    const res = await api.get('/admin/users/settings/scheduler');
+    if (res.success) {
+      schedulerMaxConcurrentAccounts.value = Number(res.data?.maxConcurrentAccounts || 3);
+      schedulerLimits.min = Number(res.data?.limits?.min || 1);
+      schedulerLimits.max = Number(res.data?.limits?.max || 20);
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '获取调度并发设置失败');
+  } finally {
+    schedulerSettingsLoading.value = false;
+  }
+};
+
+const saveSchedulerSettings = async () => {
+  schedulerSettingsSaving.value = true;
+  try {
+    const res = await api.put('/admin/users/settings/scheduler', {
+      maxConcurrentAccounts: schedulerMaxConcurrentAccounts.value,
+    });
+    if (res.success) {
+      schedulerMaxConcurrentAccounts.value = Number(res.data?.maxConcurrentAccounts || schedulerMaxConcurrentAccounts.value);
+      schedulerLimits.min = Number(res.data?.limits?.min || schedulerLimits.min);
+      schedulerLimits.max = Number(res.data?.limits?.max || schedulerLimits.max);
+      ElMessage.success('调度并发设置已保存');
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '保存调度并发设置失败');
+  } finally {
+    schedulerSettingsSaving.value = false;
   }
 };
 
@@ -608,6 +686,7 @@ const deleteUser = async (row) => {
 };
 
 onMounted(() => {
+  fetchSchedulerSettings();
   fetchTaskTypes();
   fetchUsers();
 });
@@ -632,6 +711,60 @@ onMounted(() => {
     border-bottom: 1px solid rgba(138, 151, 185, 0.14);
     padding-bottom: 14px;
   }
+}
+
+.header-subtitle {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+.scheduler-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.scheduler-setting-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(138, 151, 185, 0.14);
+  background: linear-gradient(135deg, rgba(91, 124, 255, 0.09), rgba(120, 210, 255, 0.06));
+}
+
+.scheduler-setting-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scheduler-setting-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.scheduler-setting-desc {
+  max-width: 520px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.scheduler-setting-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.scheduler-setting-tip {
+  font-size: 12px;
+  color: var(--text-tertiary);
 }
 
 .user-table {
@@ -756,6 +889,32 @@ onMounted(() => {
 :deep(.user-edit-dialog .el-form-item__label) {
   color: var(--text-secondary);
   font-weight: 600;
+}
+
+@media (max-width: 768px) {
+  .scheduler-setting-main,
+  .card-header,
+  .account-summary,
+  .log-item-header,
+  .log-filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .scheduler-setting-control {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .scheduler-setting-control :deep(.el-input-number) {
+    width: 100%;
+  }
+
+  .log-left,
+  .log-right {
+    justify-content: space-between;
+  }
 }
 
 :deep(.user-log-dialog .el-dialog__body) {

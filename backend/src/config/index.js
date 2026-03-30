@@ -28,7 +28,7 @@ export const config = {
     timezone: 'Asia/Shanghai'
   },
   scheduler: {
-    maxConcurrentAccounts: Number(process.env.MAX_CONCURRENT_ACCOUNTS) || 2,
+    maxConcurrentAccounts: Number(process.env.MAX_CONCURRENT_ACCOUNTS) || 3,
     dailyCatchupMaxConcurrency: Number(process.env.DAILY_CATCHUP_MAX_CONCURRENCY) || 2,
     staggerWindowMs: Number(process.env.SCHEDULER_STAGGER_WINDOW_MS) || 600000,
     reusableConnection: {

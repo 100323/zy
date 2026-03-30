@@ -3,6 +3,10 @@ import { all, get, run } from '../database/index.js';
 import { authMiddleware, adminOnly } from '../middleware/auth.js';
 import { hashPassword } from '../utils/crypto.js';
 import { buildUserAccessSummary, normalizeDateTimeInput } from '../utils/userAccess.js';
+import {
+  getSchedulerSettings,
+  updateSchedulerMaxConcurrentAccountsSetting,
+} from '../utils/systemSettings.js';
 
 const router = Router();
 
@@ -71,8 +75,57 @@ function serializeUser(user) {
 
 function resolveValidationStatus(error) {
   const message = String(error?.message || '');
-  return /(时间|数量上限)/.test(message) ? 400 : 500;
+  return /(时间|数量上限|并发账号数)/.test(message) ? 400 : 500;
 }
+
+router.get('/settings/scheduler', (req, res) => {
+  try {
+    res.json({
+      success: true,
+      data: getSchedulerSettings(),
+    });
+  } catch (error) {
+    console.error('获取调度设置错误:', error);
+    res.status(500).json({
+      success: false,
+      error: '获取调度设置失败',
+    });
+  }
+});
+
+router.put('/settings/scheduler', (req, res) => {
+  try {
+    const hasCamel = Object.prototype.hasOwnProperty.call(req.body || {}, 'maxConcurrentAccounts');
+    const hasSnake = Object.prototype.hasOwnProperty.call(req.body || {}, 'max_concurrent_accounts');
+    const rawValue = hasCamel
+      ? req.body.maxConcurrentAccounts
+      : (hasSnake ? req.body.max_concurrent_accounts : undefined);
+
+    if (rawValue === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: '缺少并发账号数配置',
+      });
+    }
+
+    const maxConcurrentAccounts = updateSchedulerMaxConcurrentAccountsSetting(rawValue);
+
+    res.json({
+      success: true,
+      message: '调度并发设置已更新',
+      data: {
+        ...getSchedulerSettings(),
+        maxConcurrentAccounts,
+      },
+    });
+  } catch (error) {
+    console.error('更新调度设置错误:', error);
+    res.status(resolveValidationStatus(error)).json({
+      success: false,
+      error: error.message || '更新调度设置失败',
+    });
+  }
+});
 
 router.get('/', (req, res) => {
   try {

@@ -143,6 +143,12 @@ CREATE TABLE IF NOT EXISTS invite_codes (
   FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS system_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_game_accounts_user ON game_accounts(user_id);
 CREATE INDEX IF NOT EXISTS idx_task_configs_account ON task_configs(account_id);
 CREATE INDEX IF NOT EXISTS idx_task_logs_account ON task_logs(account_id);
@@ -175,6 +181,7 @@ export async function initDatabase() {
   ensureUsersSchema(db);
   ensureGameAccountSchema(db);
   ensureTaskConfigSchema(db);
+  ensureSystemSettingsSchema(db);
   normalizeGameAccounts(db);
   cleanupLogTables(db);
   
@@ -252,6 +259,33 @@ function ensureTaskConfigSchema(db) {
     }
   } catch (error) {
     console.warn('⚠️ 检查 task_configs 表结构失败:', error?.message || error);
+  }
+}
+
+function ensureSystemSettingsSchema(db) {
+  try {
+    db.run(`CREATE TABLE IF NOT EXISTS system_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    const existingSchedulerConcurrency = db.exec(
+      "SELECT value FROM system_settings WHERE key = 'scheduler_max_concurrent_accounts' LIMIT 1"
+    );
+    const hasSchedulerConcurrency = Array.isArray(existingSchedulerConcurrency?.[0]?.values)
+      && existingSchedulerConcurrency[0].values.length > 0;
+
+    if (!hasSchedulerConcurrency) {
+      const defaultValue = String(Number(config?.scheduler?.maxConcurrentAccounts) || 3);
+      db.run(
+        `INSERT INTO system_settings (key, value, updated_at)
+         VALUES ('scheduler_max_concurrent_accounts', ?, CURRENT_TIMESTAMP)`,
+        [defaultValue],
+      );
+    }
+  } catch (error) {
+    console.warn('⚠️ 检查 system_settings 表结构失败:', error?.message || error);
   }
 }
 

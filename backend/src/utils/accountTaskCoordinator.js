@@ -1,4 +1,5 @@
 import config from '../config/index.js';
+import { getSchedulerMaxConcurrentAccountsSetting } from './systemSettings.js';
 
 const accountTaskChains = new Map();
 const accountClients = new Map();
@@ -12,8 +13,12 @@ function normalizeAccountId(accountId) {
 }
 
 function getMaxConcurrentAccounts() {
-  const value = Number(config?.scheduler?.maxConcurrentAccounts || 0);
-  return Number.isFinite(value) && value > 0 ? value : 2;
+  try {
+    return getSchedulerMaxConcurrentAccountsSetting();
+  } catch {
+    const value = Number(config?.scheduler?.maxConcurrentAccounts || 0);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 3;
+  }
 }
 
 function getTaskTypeThrottleMs(taskType) {

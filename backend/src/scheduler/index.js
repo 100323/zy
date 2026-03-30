@@ -37,9 +37,9 @@ import { getRefreshedTokenSessionFromStoredBin } from '../utils/accountTokenRefr
 import {
   getSensitiveTaskRetryConfig,
   getWsReconnectRetryConfig,
+  computeDeterministicDelayMs,
   isTooFastError,
   sleep,
-  waitForScheduledTaskStagger,
 } from '../utils/taskExecutionControl.js';
 import {
   executeStudyChallenge,
@@ -49,9 +49,11 @@ const activeConnections = new Map();
 const scheduledJobs = new Map();
 const connectionPromises = new Map();
 const dailyRewardFlushState = new Map();
+const pendingAccountTaskBatches = new Map();
 const DAILY_REWARD_FLUSH_DELAY_MS = 15000;
 const DAILY_REWARD_RETRY_DELAY_MS = 30000;
 const DAILY_REWARD_MAX_RETRIES = 3;
+const ACCOUNT_BATCH_MIN_DELAY_MS = 1500;
 const DAILY_POINT_TASK_ID_MAP = {
   SIGN_IN: [1],
   HANGUP_ADD_TIME: [2],
@@ -79,7 +81,6 @@ const DAILY_REWARD_DIRTY_TASKS = new Set([
 const SENSITIVE_TASK_TYPES = new Set(['HANGUP_ADD_TIME', 'LEGACY_CLAIM']);
 const DAILY_CATCHUP_CRON = '15 19 * * *';
 const DAILY_CATCHUP_CUTOFF_HOUR = 19;
-const DEFAULT_DAILY_CATCHUP_CONCURRENCY = 2;
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 function pad2(value) {
@@ -331,31 +332,510 @@ function collectDailyCatchupTasks(tasks, cutoffHour = DAILY_CATCHUP_CUTOFF_HOUR,
   };
 }
 
-function getDailyCatchupMaxConcurrency() {
-  const value = Number(config?.scheduler?.dailyCatchupMaxConcurrency);
-  if (Number.isFinite(value) && value > 0) {
-    return Math.floor(value);
+function getTaskAccountId(task) {
+  return Number(task?.account_id ?? task?.id ?? 0);
+}
+
+function getTaskAccountName(task) {
+  return task?.account_name || task?.name || `账号${getTaskAccountId(task) || '未知'}`;
+}
+
+function getScheduledTaskBatchItemKey(task) {
+  if (task?.id) {
+    return `task:${task.id}`;
+  }
+  return `account:${getTaskAccountId(task)}:type:${String(task?.task_type || '').trim()}`;
+}
+
+function getAccountBatchSlotKey(date = new Date()) {
+  const parts = getShanghaiDateParts(date);
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)} ${pad2(parts.hour)}:${pad2(parts.minute)}`;
+}
+
+function getAccountBatchDelayMs(task, source = 'scheduler', now = new Date()) {
+  const maxDelayMs = Math.max(0, Number(config?.scheduler?.staggerWindowMs) || 0);
+  const deterministicDelayMs = computeDeterministicDelayMs(
+    `${source}:${getTaskAccountId(task)}:${getAccountBatchSlotKey(now)}`,
+    maxDelayMs,
+  );
+
+  if (maxDelayMs <= 0) {
+    return ACCOUNT_BATCH_MIN_DELAY_MS;
   }
 
-  const fallback = Number(config?.scheduler?.maxConcurrentAccounts);
-  if (Number.isFinite(fallback) && fallback > 0) {
-    return Math.floor(fallback);
+  return Math.max(ACCOUNT_BATCH_MIN_DELAY_MS, deterministicDelayMs);
+}
+
+function ensurePendingAccountTaskBatch(task, source = 'scheduler') {
+  const accountId = getTaskAccountId(task);
+  if (!accountId) {
+    throw new Error('缺少账号ID，无法加入账号批次队列');
   }
 
-  return DEFAULT_DAILY_CATCHUP_CONCURRENCY;
+  if (!pendingAccountTaskBatches.has(accountId)) {
+    pendingAccountTaskBatches.set(accountId, {
+      accountId,
+      accountName: getTaskAccountName(task),
+      items: new Map(),
+      sequence: 0,
+      timer: null,
+      scheduledAt: null,
+      lastSource: source,
+    });
+  }
+
+  const entry = pendingAccountTaskBatches.get(accountId);
+  entry.accountName = getTaskAccountName(task);
+  entry.lastSource = source || entry.lastSource || 'scheduler';
+  return entry;
+}
+
+function clearPendingAccountTaskBatchTimer(entry) {
+  if (entry?.timer) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+  if (entry) {
+    entry.scheduledAt = null;
+  }
+}
+
+function cleanupPendingAccountTaskBatch(accountId) {
+  const entry = pendingAccountTaskBatches.get(accountId);
+  if (!entry) return;
+  if (entry.items.size > 0 || entry.timer) {
+    return;
+  }
+  pendingAccountTaskBatches.delete(accountId);
+}
+
+function schedulePendingAccountTaskBatch(entry, delayMs) {
+  if (!entry || entry.timer) {
+    return;
+  }
+
+  const normalizedDelay = Math.max(0, Number(delayMs) || 0);
+  entry.scheduledAt = Date.now() + normalizedDelay;
+  entry.timer = setTimeout(() => {
+    entry.timer = null;
+    entry.scheduledAt = null;
+    void flushPendingAccountTaskBatch(entry.accountId);
+  }, normalizedDelay);
+}
+
+function parseTaskConfig(task) {
+  if (!task?.config_json) {
+    return {};
+  }
+  return JSON.parse(task.config_json);
+}
+
+function buildTaskConnectionContext(task) {
+  const accountId = getTaskAccountId(task);
+  const accountName = getTaskAccountName(task);
+  const rawToken = task?.token || decrypt(task?.token_encrypted, task?.token_iv);
+  const tokenMeta = parseTokenPayload(rawToken);
+  const tokenCandidates = tokenMeta.candidates?.length
+    ? tokenMeta.candidates
+    : [tokenMeta.token].filter(Boolean);
+
+  if (tokenCandidates.length === 0) {
+    throw new Error('账号Token无效，无法建立WebSocket连接');
+  }
+
+  return {
+    accountId,
+    accountName,
+    tokenMeta,
+    tokenCandidates,
+    wsUrl: task?.ws_url || tokenMeta.wsUrl || '',
+    importMethod: task?.account_import_method || null,
+    updatedAt: task?.account_updated_at || null,
+  };
+}
+
+function getLatestScheduledAccountSnapshot(accountId) {
+  const snapshot = get(
+    `SELECT
+       ga.id AS account_id,
+       ga.user_id,
+       ga.name AS account_name,
+       ga.token_encrypted,
+       ga.token_iv,
+       ga.ws_url,
+       ga.import_method AS account_import_method,
+       ga.updated_at AS account_updated_at,
+       ga.status AS account_status
+     FROM game_accounts ga
+     WHERE ga.id = ?
+     LIMIT 1`,
+    [accountId]
+  );
+
+  if (!snapshot) {
+    throw new Error('游戏账号不存在或已被删除');
+  }
+
+  if (String(snapshot.account_status || 'active') !== 'active') {
+    throw new Error('游戏账号已停用');
+  }
+
+  return snapshot;
+}
+
+function mergeTaskWithLatestAccountSnapshot(task, snapshot) {
+  return {
+    ...task,
+    account_id: Number(snapshot?.account_id || task?.account_id || task?.id || 0),
+    user_id: snapshot?.user_id ?? task?.user_id,
+    name: snapshot?.account_name || task?.name,
+    account_name: snapshot?.account_name || task?.account_name || task?.name,
+    token_encrypted: snapshot?.token_encrypted ?? task?.token_encrypted,
+    token_iv: snapshot?.token_iv ?? task?.token_iv,
+    ws_url: snapshot?.ws_url ?? task?.ws_url,
+    account_import_method: snapshot?.account_import_method ?? task?.account_import_method,
+    account_updated_at: snapshot?.account_updated_at ?? task?.account_updated_at,
+  };
+}
+
+function shouldAbortAccountBatchOnError(error) {
+  const message = String(error?.message || error || '');
+  return (
+    message.includes('所属用户不可用') ||
+    message.includes('游戏账号已停用') ||
+    message.includes('游戏账号不存在或已被删除')
+  );
+}
+
+function markScheduledTaskSuccess(task, result) {
+  const accountId = getTaskAccountId(task);
+  addTaskLog(
+    accountId,
+    task.task_type,
+    'success',
+    result?.message || '执行成功',
+    JSON.stringify(result?.data || {})
+  );
+  if (task.id) {
+    markTaskRunTime(task.id, new Date().toISOString(), calculateNextRunAt(task.cron_expression));
+  }
+  console.log(`✅ 任务执行成功: ${getTaskAccountName(task)} - ${task.task_type}`);
+}
+
+function markScheduledTaskFailure(task, error) {
+  const accountId = getTaskAccountId(task);
+  const accountName = getTaskAccountName(task);
+  console.error(`❌ 任务执行失败: ${accountName} - ${task.task_type}:`, error.message);
+  addTaskLog(
+    accountId,
+    task.task_type,
+    shouldIgnoreFailure(error) ? 'ignored' : 'error',
+    error.message,
+    error?.details ? JSON.stringify(error.details) : null
+  );
+  if (task.id) {
+    markTaskRunTime(task.id, new Date().toISOString(), calculateNextRunAt(task.cron_expression));
+  }
+}
+
+async function ensureTaskUserAvailable(task) {
+  const user = get(
+    'SELECT id, username, role, is_enabled, access_start_at, access_end_at FROM users WHERE id = ?',
+    [task.user_id]
+  );
+  const userStatus = getUserAvailabilityStatus(user);
+  if (!userStatus.allowed) {
+    throw new Error(`所属用户不可用，任务已停止：${userStatus.reason}`);
+  }
+}
+
+async function executeScheduledTaskWithClient(task, context = {}) {
+  const accountId = getTaskAccountId(task);
+  const accountName = getTaskAccountName(task);
+  const taskType = task.task_type;
+  const source = context.source || 'scheduler';
+  const throwOnError = context.throwOnError === true;
+  let currentClient = null;
+
+  try {
+    await ensureTaskUserAvailable(task);
+    const taskConfig = parseTaskConfig(task);
+    currentClient = await context.ensureClient();
+    const execution = await executeTaskWithFlowControl({
+      accountId,
+      accountName,
+      taskType,
+      taskConfig,
+      client: currentClient,
+      source,
+      reconnect: context.reconnect,
+    });
+    currentClient = execution.client;
+    const result = execution.result;
+
+    await claimDailyPointRewardsByTask(currentClient, taskType, taskConfig);
+    updateDailyRewardFlushAfterTask(accountId, {
+      taskType,
+      accountName,
+      tokenCandidates: context.connectionContext?.tokenCandidates || [],
+      roleId: context.connectionContext?.tokenMeta?.roleId ?? null,
+      wsUrl: context.connectionContext?.wsUrl || '',
+      importMethod: context.connectionContext?.importMethod || null,
+      updatedAt: context.connectionContext?.updatedAt || null,
+    });
+
+    markScheduledTaskSuccess(task, result);
+    return {
+      ok: true,
+      task,
+      result,
+      client: currentClient,
+    };
+  } catch (error) {
+    markScheduledTaskFailure(task, error);
+    error.__scheduledTaskLogged = true;
+    if (throwOnError) {
+      throw error;
+    }
+    return {
+      ok: false,
+      task,
+      error: error?.message || String(error),
+      client: currentClient,
+    };
+  }
+}
+
+function resolveScheduledTaskBatchWaiters(item, outcome) {
+  for (const resolve of item.waiters) {
+    resolve(outcome);
+  }
+  item.waiters.length = 0;
+}
+
+async function executeAccountTaskBatch(batchItems, context = {}) {
+  const firstTask = batchItems[0]?.task;
+  const accountId = getTaskAccountId(firstTask);
+  const accountName = getTaskAccountName(firstTask);
+
+  return runAccountTaskExclusive(accountId, async () => {
+    console.log('🚀 开始账号批次执行', {
+      accountId,
+      accountName,
+      source: context.source || 'scheduler',
+      taskCount: batchItems.length,
+      taskTypes: batchItems.map((item) => item.task.task_type),
+    });
+
+    let connectionContext = null;
+    let batchClient = null;
+    let processedItemCount = 0;
+    let shouldRunBatchFinalizer = true;
+
+    try {
+      const batchSeedTask = mergeTaskWithLatestAccountSnapshot(
+        firstTask,
+        getLatestScheduledAccountSnapshot(accountId)
+      );
+      await ensureTaskUserAvailable(batchSeedTask);
+      connectionContext = buildTaskConnectionContext(batchSeedTask);
+
+      const ensureBatchClient = async () => {
+        if (batchClient?.isSocketOpen?.()) {
+          return batchClient;
+        }
+        batchClient = await ensureConnectedClient(
+          accountId,
+          accountName,
+          connectionContext.tokenCandidates,
+          connectionContext.tokenMeta?.roleId ?? null,
+          connectionContext.wsUrl,
+          {
+            importMethod: connectionContext.importMethod,
+            updatedAt: connectionContext.updatedAt,
+          }
+        );
+        return batchClient;
+      };
+
+      const reconnectBatchClient = async (taskType = null) => {
+        console.warn('🔁 批次任务检测到连接已断开，准备重连', {
+          accountId,
+          accountName,
+          taskType,
+          source: context.source || 'scheduler',
+        });
+        forceDisconnectClient(accountId);
+        batchClient = await ensureConnectedClient(
+          accountId,
+          accountName,
+          connectionContext.tokenCandidates,
+          connectionContext.tokenMeta?.roleId ?? null,
+          connectionContext.wsUrl,
+          {
+            importMethod: connectionContext.importMethod,
+            updatedAt: connectionContext.updatedAt,
+          }
+        );
+        return batchClient;
+      };
+
+      for (let index = 0; index < batchItems.length; index += 1) {
+        const item = batchItems[index];
+        const latestTask = mergeTaskWithLatestAccountSnapshot(
+          item.task,
+          getLatestScheduledAccountSnapshot(accountId)
+        );
+        const outcome = await executeScheduledTaskWithClient(latestTask, {
+          source: context.source || 'scheduler',
+          ensureClient: ensureBatchClient,
+          reconnect: async () => await reconnectBatchClient(latestTask.task_type),
+          connectionContext,
+        });
+
+        if (outcome.client) {
+          batchClient = outcome.client;
+        }
+        resolveScheduledTaskBatchWaiters(item, outcome);
+        processedItemCount += 1;
+
+        if (!outcome.ok && shouldAbortAccountBatchOnError(outcome.error)) {
+          shouldRunBatchFinalizer = false;
+          for (const pendingItem of batchItems.slice(index + 1)) {
+            markScheduledTaskFailure(pendingItem.task, new Error(outcome.error));
+            resolveScheduledTaskBatchWaiters(pendingItem, {
+              ok: false,
+              task: pendingItem.task,
+              error: outcome.error,
+              client: batchClient,
+            });
+            processedItemCount += 1;
+          }
+          break;
+        }
+      }
+
+      if (shouldRunBatchFinalizer && batchClient?.isSocketOpen?.()) {
+        await flushDailyRewardClaimOnClient(
+          accountId,
+          batchClient,
+          {
+            accountName,
+            tokenCandidates: connectionContext.tokenCandidates,
+            roleId: connectionContext.tokenMeta?.roleId ?? null,
+            wsUrl: connectionContext.wsUrl,
+            importMethod: connectionContext.importMethod,
+            updatedAt: connectionContext.updatedAt,
+          },
+          async () => await reconnectBatchClient('DAILY_TASK_CLAIM'),
+          'batch-finalize'
+        );
+      }
+    } catch (error) {
+      console.error('❌ 账号批次执行初始化失败', {
+        accountId,
+        accountName,
+        source: context.source || 'scheduler',
+        error: error?.message || String(error),
+      });
+
+      for (const item of batchItems.slice(processedItemCount)) {
+        markScheduledTaskFailure(item.task, error);
+        resolveScheduledTaskBatchWaiters(item, {
+          ok: false,
+          task: item.task,
+          error: error?.message || String(error),
+          client: batchClient,
+        });
+      }
+    } finally {
+      forceDisconnectClient(accountId);
+      console.log('🧹 账号批次执行结束，连接已断开', {
+        accountId,
+        accountName,
+        source: context.source || 'scheduler',
+      });
+    }
+  });
+}
+
+async function flushPendingAccountTaskBatch(accountId) {
+  const entry = pendingAccountTaskBatches.get(accountId);
+  if (!entry) {
+    return null;
+  }
+
+  clearPendingAccountTaskBatchTimer(entry);
+
+  if (entry.items.size === 0) {
+    cleanupPendingAccountTaskBatch(accountId);
+    return null;
+  }
+
+  const batchItems = Array.from(entry.items.values())
+    .sort((a, b) => a.order - b.order);
+  entry.items.clear();
+
+  try {
+    return await executeAccountTaskBatch(batchItems, {
+      source: entry.lastSource || 'scheduler',
+    });
+  } finally {
+    if (entry.items.size === 0 && !entry.timer) {
+      cleanupPendingAccountTaskBatch(accountId);
+    } else if (entry.items.size > 0 && !entry.timer) {
+      schedulePendingAccountTaskBatch(entry, ACCOUNT_BATCH_MIN_DELAY_MS);
+    }
+  }
+}
+
+function enqueueAccountTaskBatch(task, options = {}) {
+  const source = options.source || 'scheduler';
+  const entry = ensurePendingAccountTaskBatch(task, source);
+  const batchItemKey = getScheduledTaskBatchItemKey(task);
+
+  if (!entry.items.has(batchItemKey)) {
+    entry.items.set(batchItemKey, {
+      key: batchItemKey,
+      task: { ...task },
+      order: entry.sequence++,
+      waiters: [],
+    });
+  } else {
+    const existingItem = entry.items.get(batchItemKey);
+    existingItem.task = {
+      ...existingItem.task,
+      ...task,
+    };
+  }
+
+  const item = entry.items.get(batchItemKey);
+  const outcomePromise = new Promise((resolve) => {
+    item.waiters.push(resolve);
+  });
+
+  if (!entry.timer) {
+    const delayMs = options.immediate === true
+      ? 0
+      : getAccountBatchDelayMs(task, source, options.now instanceof Date ? options.now : new Date());
+
+    console.log('📥 定时任务已加入账号批次队列', {
+      accountId: entry.accountId,
+      accountName: entry.accountName,
+      taskType: task.task_type || null,
+      source,
+      delayMs,
+      pendingTaskCount: entry.items.size,
+    });
+
+    schedulePendingAccountTaskBatch(entry, delayMs);
+  }
+
+  return outcomePromise;
 }
 
 async function runCatchupTask(task) {
-  await waitForScheduledTaskStagger({
-    scope: 'scheduler-catchup',
-    taskId: task.id ?? null,
-    accountId: task.account_id ?? null,
-    accountName: task.account_name || task.name || null,
-    taskType: task.task_type || null,
-    cronExpression: task.cron_expression || null,
-  });
-
-  console.log('🛟 开始补偿执行任务', {
+  console.log('🛟 开始补偿排队任务', {
     accountId: task.account_id ?? null,
     accountName: task.account_name || task.name || null,
     taskType: task.task_type || null,
@@ -365,19 +845,10 @@ async function runCatchupTask(task) {
     lastLogAt: task.catchupLastLogAt || null,
   });
 
-  try {
-    await executeTask(task);
-    return {
-      ok: true,
-      task,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      task,
-      error: error?.message || String(error),
-    };
-  }
+  return await enqueueAccountTaskBatch(task, {
+    source: 'scheduler-catchup',
+    now: new Date(),
+  });
 }
 
 export async function runDailyTaskCatchup(options = {}) {
@@ -406,26 +877,29 @@ export async function runDailyTaskCatchup(options = {}) {
     };
   }
 
-  const maxConcurrency = Math.min(getDailyCatchupMaxConcurrency(), catchup.tasks.length);
-  const results = [];
-  let cursor = 0;
+  const groupedTasks = catchup.tasks.reduce((acc, task) => {
+    const accountId = getTaskAccountId(task);
+    if (!acc.has(accountId)) {
+      acc.set(accountId, []);
+    }
+    acc.get(accountId).push(task);
+    return acc;
+  }, new Map());
 
   console.log('🛟 每日任务补偿开始执行', {
     total: catchup.tasks.length,
-    maxConcurrency,
+    accountCount: groupedTasks.size,
   });
 
-  const workers = Array.from({ length: maxConcurrency }, async () => {
-    while (cursor < catchup.tasks.length) {
-      const currentIndex = cursor;
-      cursor += 1;
-      results[currentIndex] = await runCatchupTask(catchup.tasks[currentIndex]);
-    }
-  });
+  const groupedResults = await Promise.all(
+    Array.from(groupedTasks.values()).map(async (tasksOfAccount) => {
+      const promises = tasksOfAccount.map((task) => runCatchupTask(task));
+      return await Promise.all(promises);
+    })
+  );
 
-  await Promise.all(workers);
-
-  const successCount = results.filter((item) => item.ok).length;
+  const results = groupedResults.flat();
+  const successCount = results.filter((item) => item?.ok).length;
   const errorCount = results.length - successCount;
 
   console.log('🛟 每日任务补偿执行结束', {
@@ -651,15 +1125,10 @@ export function scheduleTask(task) {
           taskType: task.task_type || null,
           cronExpression,
         });
-        await waitForScheduledTaskStagger({
-          scope: 'scheduler',
-          taskId: task.id ?? null,
-          accountId: task.account_id ?? null,
-          accountName: task.account_name || task.name || null,
-          taskType: task.task_type || null,
-          cronExpression,
+        await enqueueAccountTaskBatch(task, {
+          source: 'scheduler',
+          now: new Date(),
         });
-        await executeTask(task);
       } finally {
         updateTaskRunTime(task.id, calculateNextRunAt(cronExpression));
       }
@@ -707,100 +1176,65 @@ export async function checkAndRunDueTasks() {
 }
 
 export async function executeTask(task) {
-  const accountId = task.account_id ?? task.id;
-  const {
-    task_type,
-    name,
-    token_encrypted,
-    token_iv,
-    config_json,
-    token,
-    account_name: accountNameFromTask,
-    ws_url,
-    account_import_method,
-    account_updated_at,
-  } = task;
-  const accountName = accountNameFromTask || name || `账号${accountId ?? '未知'}`;
+  const accountId = getTaskAccountId(task);
+  const accountName = getTaskAccountName(task);
 
   if (!accountId) {
     throw new Error('缺少账号ID，无法执行任务');
   }
 
   return runAccountTaskExclusive(accountId, async () => {
-    console.log(`🚀 开始执行任务: ${accountName} - ${task_type}`);
-
+    console.log(`🚀 开始执行任务: ${accountName} - ${task.task_type}`);
     try {
-      const user = get(
-        'SELECT id, username, role, is_enabled, access_start_at, access_end_at FROM users WHERE id = ?',
-        [task.user_id]
-      );
-      const userStatus = getUserAvailabilityStatus(user);
-      if (!userStatus.allowed) {
-        throw new Error(`所属用户不可用，任务已停止：${userStatus.reason}`);
-      }
+      await ensureTaskUserAvailable(task);
+      const connectionContext = buildTaskConnectionContext(task);
+      let client = null;
 
-      const rawToken = token || decrypt(token_encrypted, token_iv);
-      const tokenMeta = parseTokenPayload(rawToken);
-      const tokenCandidates = tokenMeta.candidates?.length
-        ? tokenMeta.candidates
-        : [tokenMeta.token].filter(Boolean);
-      if (tokenCandidates.length === 0) {
-        throw new Error('账号Token无效，无法建立WebSocket连接');
-      }
-      const taskWsUrl = ws_url || tokenMeta.wsUrl || '';
-      const taskConfig = config_json ? JSON.parse(config_json) : {};
-      let client = await ensureConnectedClient(accountId, accountName, tokenCandidates, tokenMeta.roleId, taskWsUrl, {
-        importMethod: account_import_method || null,
-        updatedAt: account_updated_at || null,
-      });
-      const execution = await executeTaskWithFlowControl({
-        accountId,
-        accountName,
-        taskType: task_type,
-        taskConfig,
-        client,
+      const ensureClient = async () => {
+        if (client?.isSocketOpen?.()) {
+          return client;
+        }
+        client = await ensureConnectedClient(
+          accountId,
+          accountName,
+          connectionContext.tokenCandidates,
+          connectionContext.tokenMeta?.roleId ?? null,
+          connectionContext.wsUrl,
+          {
+            importMethod: connectionContext.importMethod,
+            updatedAt: connectionContext.updatedAt,
+          }
+        );
+        return client;
+      };
+
+      const outcome = await executeScheduledTaskWithClient(task, {
         source: 'scheduler',
+        ensureClient,
         reconnect: async () => {
-          console.warn(`🔁 检测到连接已断开，重连后重试: ${accountName} - ${task_type}`);
+          console.warn(`🔁 检测到连接已断开，重连后重试: ${accountName} - ${task.task_type}`);
           forceDisconnectClient(accountId);
-          return await ensureConnectedClient(accountId, accountName, tokenCandidates, tokenMeta.roleId, taskWsUrl, {
-            importMethod: account_import_method || null,
-            updatedAt: account_updated_at || null,
-          });
+          client = await ensureConnectedClient(
+            accountId,
+            accountName,
+            connectionContext.tokenCandidates,
+            connectionContext.tokenMeta?.roleId ?? null,
+            connectionContext.wsUrl,
+            {
+              importMethod: connectionContext.importMethod,
+              updatedAt: connectionContext.updatedAt,
+            }
+          );
+          return client;
         },
-      });
-      client = execution.client;
-      const result = execution.result;
-
-      await claimDailyPointRewardsByTask(client, task_type, taskConfig);
-      updateDailyRewardFlushAfterTask(accountId, {
-        taskType: task_type,
-        accountName,
-        tokenCandidates,
-        roleId: tokenMeta.roleId,
-        wsUrl: taskWsUrl,
-        importMethod: account_import_method || null,
-        updatedAt: account_updated_at || null,
+        connectionContext,
+        throwOnError: true,
       });
 
-      addTaskLog(accountId, task_type, 'success', result.message || '执行成功', JSON.stringify(result.data || {}));
-      if (task.id) {
-        markTaskRunTime(task.id, new Date().toISOString(), calculateNextRunAt(task.cron_expression));
-      }
-      console.log(`✅ 任务执行成功: ${accountName} - ${task_type}`);
-
-      return result;
+      return outcome.result;
     } catch (error) {
-      console.error(`❌ 任务执行失败: ${accountName} - ${task_type}:`, error.message);
-      addTaskLog(
-        accountId,
-        task_type,
-        shouldIgnoreFailure(error) ? 'ignored' : 'error',
-        error.message,
-        error?.details ? JSON.stringify(error.details) : null
-      );
-      if (task.id) {
-        markTaskRunTime(task.id, new Date().toISOString(), calculateNextRunAt(task.cron_expression));
+      if (!error?.__scheduledTaskLogged) {
+        markScheduledTaskFailure(task, error);
       }
       throw error;
     }
@@ -971,6 +1405,90 @@ function clearDailyRewardFlush(accountId) {
   }
 }
 
+function scheduleDailyRewardFlushRetry(entry, accountId, reason = 'retry') {
+  if (entry.retryCount < DAILY_REWARD_MAX_RETRIES && !entry.timer) {
+    entry.retryCount += 1;
+    entry.timer = setTimeout(() => {
+      void flushDailyRewardClaim(accountId, reason);
+    }, DAILY_REWARD_RETRY_DELAY_MS);
+    return;
+  }
+
+  if (entry.retryCount >= DAILY_REWARD_MAX_RETRIES) {
+    entry.dirty = false;
+    entry.retryCount = 0;
+    addTaskLog(accountId, 'DAILY_TASK_CLAIM', 'ignored', '自动收尾补领已停止重试，等待下次任务重新触发');
+  }
+}
+
+async function flushDailyRewardClaimOnClient(
+  accountId,
+  client,
+  flushContext = {},
+  reconnect,
+  reason = 'batch-finalize'
+) {
+  const entry = ensureDailyRewardFlushEntry(accountId);
+  if (entry.timer) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+
+  if (!entry.dirty || !client?.isSocketOpen?.()) {
+    return false;
+  }
+
+  try {
+    const execution = await executeTaskWithFlowControl({
+      accountId,
+      accountName: flushContext.accountName || entry.accountName || `账号${accountId}`,
+      taskType: 'DAILY_TASK_CLAIM',
+      taskConfig: {},
+      client,
+      source: 'scheduler-batch-finalize',
+      reconnect,
+    });
+    const currentClient = execution.client;
+    const result = execution.result;
+
+    entry.dirty = false;
+    entry.retryCount = 0;
+    const claimedCount = Number(result?.data?.claimedCount || 0);
+    const flushMessage = claimedCount > 0
+      ? `自动收尾补领完成: ${result.message || '每日任务奖励领取完成'}`
+      : `自动收尾检查完成: ${result.message || '没有可领取的每日任务奖励'}`;
+    addTaskLog(
+      accountId,
+      'DAILY_TASK_CLAIM',
+      'success',
+      flushMessage,
+      JSON.stringify({
+        autoFlush: true,
+        reason,
+        ...(result.data || {}),
+      })
+    );
+    console.log(`✅ ${flushMessage}: ${flushContext.accountName || entry.accountName}`);
+    return currentClient;
+  } catch (error) {
+    entry.dirty = true;
+    console.error(`❌ 自动收尾补领失败: ${flushContext.accountName || entry.accountName}:`, error.message);
+    addTaskLog(
+      accountId,
+      'DAILY_TASK_CLAIM',
+      'error',
+      `自动收尾补领失败: ${error.message}`,
+      error?.details ? JSON.stringify({
+        autoFlush: true,
+        reason,
+        ...(error.details || {}),
+      }) : null
+    );
+    scheduleDailyRewardFlushRetry(entry, accountId, 'retry');
+    return false;
+  }
+}
+
 async function flushDailyRewardClaim(accountId, reason = 'debounced') {
   const entry = ensureDailyRewardFlushEntry(accountId);
   if (entry.timer) {
@@ -1080,16 +1598,7 @@ async function flushDailyRewardClaim(accountId, reason = 'debounced') {
           ...(error.details || {}),
         }) : null
       );
-      if (entry.retryCount < DAILY_REWARD_MAX_RETRIES && !entry.timer) {
-        entry.retryCount += 1;
-        entry.timer = setTimeout(() => {
-          void flushDailyRewardClaim(accountId, 'retry');
-        }, DAILY_REWARD_RETRY_DELAY_MS);
-      } else if (entry.retryCount >= DAILY_REWARD_MAX_RETRIES) {
-        entry.dirty = false;
-        entry.retryCount = 0;
-        addTaskLog(accountId, 'DAILY_TASK_CLAIM', 'ignored', '自动收尾补领已停止重试，等待下次任务重新触发');
-      }
+      scheduleDailyRewardFlushRetry(entry, accountId, 'retry');
       return false;
     } finally {
       entry.flushingPromise = null;
@@ -2325,6 +2834,13 @@ export function stopScheduler() {
   }
   scheduledJobs.clear();
   connectionPromises.clear();
+
+  for (const entry of pendingAccountTaskBatches.values()) {
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+    }
+  }
+  pendingAccountTaskBatches.clear();
   
   for (const entry of dailyRewardFlushState.values()) {
     if (entry.timer) {
