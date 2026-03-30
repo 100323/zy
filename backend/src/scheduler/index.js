@@ -1057,7 +1057,7 @@ async function recruitWithReconnect(client, recruitType, mode, maxReconnectRetri
 export async function initScheduler() {
   console.log('🕐 初始化定时任务调度器...');
 
-  const seedResult = ensureDefaultTaskConfigsForAllAccounts();
+  const seedResult = await ensureDefaultTaskConfigsForAllAccounts();
   if (seedResult.created > 0) {
     console.log('🧩 已为现有账号补齐默认定时任务配置', {
       accountCount: seedResult.accountCount,
@@ -1066,7 +1066,7 @@ export async function initScheduler() {
     });
   }
 
-  const cronRebalanceResult = rebalanceDefaultTaskCronExpressions();
+  const cronRebalanceResult = await rebalanceDefaultTaskCronExpressions();
   if (cronRebalanceResult.updated > 0) {
     console.log('🕒 已迁移默认任务 cron 分布，缓解中午洪峰', {
       updated: cronRebalanceResult.updated,

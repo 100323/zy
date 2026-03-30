@@ -161,7 +161,8 @@ function insertDefaultTaskConfig(targetDb, accountId, taskType, seed = {}) {
   return true;
 }
 
-export function ensureDefaultTaskConfigsForAccount(accountId, targetDb = getDatabase()) {
+export function ensureDefaultTaskConfigsForAccount(accountId, targetDb = getDatabase(), options = {}) {
+  const { persist = true } = options;
   const normalizedAccountId = Number(accountId);
   if (!Number.isInteger(normalizedAccountId) || normalizedAccountId <= 0) {
     return { created: 0, insertedTaskTypes: [] };
@@ -183,8 +184,8 @@ export function ensureDefaultTaskConfigsForAccount(accountId, targetDb = getData
     }
   }
 
-  if (insertedTaskTypes.length > 0) {
-    saveDatabase();
+  if (insertedTaskTypes.length > 0 && persist) {
+    void saveDatabase();
   }
 
   return {
@@ -193,13 +194,13 @@ export function ensureDefaultTaskConfigsForAccount(accountId, targetDb = getData
   };
 }
 
-export function ensureDefaultTaskConfigsForAllAccounts(targetDb = getDatabase()) {
+export async function ensureDefaultTaskConfigsForAllAccounts(targetDb = getDatabase()) {
   const accounts = all('SELECT id FROM game_accounts');
   let created = 0;
   const details = [];
 
   accounts.forEach((account) => {
-    const result = ensureDefaultTaskConfigsForAccount(account.id, targetDb);
+    const result = ensureDefaultTaskConfigsForAccount(account.id, targetDb, { persist: false });
     if (result.created > 0) {
       created += result.created;
       details.push({
@@ -209,6 +210,10 @@ export function ensureDefaultTaskConfigsForAllAccounts(targetDb = getDatabase())
     }
   });
 
+  if (created > 0) {
+    await saveDatabase();
+  }
+
   return {
     accountCount: accounts.length,
     created,
@@ -216,7 +221,7 @@ export function ensureDefaultTaskConfigsForAllAccounts(targetDb = getDatabase())
   };
 }
 
-export function rebalanceDefaultTaskCronExpressions() {
+export async function rebalanceDefaultTaskCronExpressions() {
   let updated = 0;
   const details = [];
   let skippedUnknown = 0;
@@ -338,7 +343,7 @@ export function rebalanceDefaultTaskCronExpressions() {
   }
 
   if (updated > 0) {
-    saveDatabase();
+    await saveDatabase();
   }
 
   return {

@@ -6,9 +6,19 @@ import config from '../config/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dbPath = path.resolve(__dirname, '../../data', path.basename(config.database.path));
+const dbTempPath = `${dbPath}.tmp`;
+const SAVE_DEBOUNCE_MS = Number(process.env.DB_SAVE_DEBOUNCE_MS) || 800;
+const SAVE_MAX_DELAY_MS = Number(process.env.DB_SAVE_MAX_DELAY_MS) || 5000;
 
 let db = null;
 let SQL = null;
+let saveTimer = null;
+let dirtySinceAt = 0;
+let isDirty = false;
+let saveInFlightPromise = null;
+let pendingSavePromise = null;
+let pendingSaveResolve = null;
+let pendingSaveReject = null;
 
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
@@ -335,7 +345,7 @@ export function normalizeGameAccounts(targetDb = getDatabase()) {
 }
 
 const TASK_LOG_RETENTION_DAYS = 30;
-const TASK_LOG_MAX_PER_ACCOUNT = 2000;
+const TASK_LOG_MAX_PER_ACCOUNT = 30;
 const BATCH_LOG_MAX_PER_TASK = 2000;
 
 export function cleanupTaskLogs(targetDb = getDatabase(), accountId = null) {
@@ -397,9 +407,127 @@ export function cleanupLogTables(targetDb = getDatabase()) {
 
 export async function saveDatabase() {
   if (!db) return;
+  markDatabaseDirty();
+  await flushDatabaseWrites();
+}
+
+function ensurePendingSavePromise() {
+  if (!pendingSavePromise) {
+    pendingSavePromise = new Promise((resolve, reject) => {
+      pendingSaveResolve = resolve;
+      pendingSaveReject = reject;
+    });
+  }
+  return pendingSavePromise;
+}
+
+function clearPendingSavePromise() {
+  pendingSavePromise = null;
+  pendingSaveResolve = null;
+  pendingSaveReject = null;
+}
+
+function resolvePendingSave() {
+  pendingSaveResolve?.();
+  clearPendingSavePromise();
+}
+
+function rejectPendingSave(error) {
+  pendingSaveReject?.(error);
+  clearPendingSavePromise();
+}
+
+function clearSaveTimer() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+}
+
+function markDatabaseDirty() {
+  if (!db) return;
+  isDirty = true;
+  if (!dirtySinceAt) {
+    dirtySinceAt = Date.now();
+  }
+}
+
+function writeDatabaseSnapshotSync() {
   const data = db.export();
   const buffer = Buffer.from(data);
-  fs.writeFileSync(dbPath, buffer);
+  fs.writeFileSync(dbTempPath, buffer);
+  fs.renameSync(dbTempPath, dbPath);
+}
+
+function scheduleDatabaseFlush({ immediate = false } = {}) {
+  if (!db) return Promise.resolve();
+
+  markDatabaseDirty();
+  const promise = ensurePendingSavePromise();
+
+  if (saveInFlightPromise) {
+    return promise;
+  }
+
+  const now = Date.now();
+  const elapsed = dirtySinceAt ? now - dirtySinceAt : 0;
+  const delay = immediate
+    ? 0
+    : Math.min(
+        SAVE_DEBOUNCE_MS,
+        Math.max(0, SAVE_MAX_DELAY_MS - elapsed),
+      );
+
+  clearSaveTimer();
+  saveTimer = setTimeout(() => {
+    void flushDatabaseWrites().catch((error) => {
+      console.error('❌ 数据库刷盘失败:', error);
+      if (db && isDirty) {
+        scheduleDatabaseFlush();
+      }
+    });
+  }, delay);
+
+  return promise;
+}
+
+export async function flushDatabaseWrites() {
+  if (!db) return;
+  while (true) {
+    if (saveInFlightPromise) {
+      await saveInFlightPromise;
+      continue;
+    }
+
+    if (!isDirty) {
+      resolvePendingSave();
+      return;
+    }
+
+    clearSaveTimer();
+
+    saveInFlightPromise = (async () => {
+      try {
+        while (db && isDirty) {
+          isDirty = false;
+          dirtySinceAt = 0;
+          writeDatabaseSnapshotSync();
+        }
+        resolvePendingSave();
+      } catch (error) {
+        isDirty = true;
+        if (!dirtySinceAt) {
+          dirtySinceAt = Date.now();
+        }
+        rejectPendingSave(error);
+        throw error;
+      } finally {
+        saveInFlightPromise = null;
+      }
+    })();
+
+    await saveInFlightPromise;
+  }
 }
 
 export function getDatabase() {
@@ -409,22 +537,32 @@ export function getDatabase() {
   return db;
 }
 
-export function closeDatabase() {
+export async function closeDatabase() {
   if (db) {
-    saveDatabase();
+    await flushDatabaseWrites();
+    clearSaveTimer();
     db.close();
     db = null;
+    isDirty = false;
+    dirtySinceAt = 0;
   }
 }
 
 export function run(sql, params = []) {
   const db = getDatabase();
   db.run(sql, params);
+
+  const normalizedSql = String(sql || '').trim().toUpperCase();
+  const shouldReadLastInsertRowid =
+    normalizedSql.startsWith('INSERT') || normalizedSql.startsWith('REPLACE');
+  const lastInsertRowid = shouldReadLastInsertRowid
+    ? (() => {
+        const lastIdResult = db.exec("SELECT last_insert_rowid() as id");
+        return lastIdResult.length > 0 ? lastIdResult[0].values[0][0] : null;
+      })()
+    : null;
   
-  const lastIdResult = db.exec("SELECT last_insert_rowid() as id");
-  const lastInsertRowid = lastIdResult.length > 0 ? lastIdResult[0].values[0][0] : null;
-  
-  saveDatabase();
+  void scheduleDatabaseFlush();
   
   return { 
     changes: db.getRowsModified(),
@@ -460,6 +598,7 @@ export function all(sql, params = []) {
 export default {
   initDatabase,
   saveDatabase,
+  flushDatabaseWrites,
   getDatabase,
   closeDatabase,
   run,

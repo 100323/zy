@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initDatabase } from './database/index.js';
+import { initDatabase, closeDatabase } from './database/index.js';
 import authRoutes from './routes/auth.js';
 import accountRoutes from './routes/accounts.js';
 import taskRoutes from './routes/tasks.js';
@@ -25,6 +25,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 let serverInstance = null;
+let isShuttingDown = false;
 
 const startupState = {
   startedAt: new Date().toISOString(),
@@ -251,18 +252,34 @@ async function startServer() {
 
 startServer();
 
-process.on('SIGINT', () => {
+async function shutdownServer(signal) {
+  if (isShuttingDown) {
+    return;
+  }
+  isShuttingDown = true;
+
   console.log('\n正在关闭服务器...');
-  stopScheduler();
-  stopBatchScheduler();
-  serverInstance?.close?.();
-  process.exit(0);
+  try {
+    stopScheduler();
+    stopBatchScheduler();
+    await new Promise((resolve) => {
+      serverInstance?.close?.(() => resolve());
+      if (!serverInstance) {
+        resolve();
+      }
+    });
+    await closeDatabase();
+    process.exit(0);
+  } catch (error) {
+    console.error(`关闭服务器失败（${signal}）:`, error);
+    process.exit(1);
+  }
+}
+
+process.on('SIGINT', () => {
+  void shutdownServer('SIGINT');
 });
 
 process.on('SIGTERM', () => {
-  console.log('\n正在关闭服务器...');
-  stopScheduler();
-  stopBatchScheduler();
-  serverInstance?.close?.();
-  process.exit(0);
+  void shutdownServer('SIGTERM');
 });
