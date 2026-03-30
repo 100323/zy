@@ -50,6 +50,8 @@ const scheduledJobs = new Map();
 const connectionPromises = new Map();
 const dailyRewardFlushState = new Map();
 const pendingAccountTaskBatches = new Map();
+let schedulerRefreshJob = null;
+let dailyCatchupJob = null;
 const DAILY_REWARD_FLUSH_DELAY_MS = 15000;
 const DAILY_REWARD_RETRY_DELAY_MS = 30000;
 const DAILY_REWARD_MAX_RETRIES = 3;
@@ -1085,13 +1087,21 @@ export async function initScheduler() {
     scheduleTask(task);
   }
 
-  cron.schedule('* * * * *', async () => {
+  if (schedulerRefreshJob) {
+    schedulerRefreshJob.stop();
+    schedulerRefreshJob = null;
+  }
+  schedulerRefreshJob = cron.schedule('* * * * *', async () => {
     await checkAndRunDueTasks();
   }, {
     timezone: config.cron.timezone
   });
 
-  cron.schedule(DAILY_CATCHUP_CRON, async () => {
+  if (dailyCatchupJob) {
+    dailyCatchupJob.stop();
+    dailyCatchupJob = null;
+  }
+  dailyCatchupJob = cron.schedule(DAILY_CATCHUP_CRON, async () => {
     await runDailyTaskCatchup({
       cutoffHour: DAILY_CATCHUP_CUTOFF_HOUR,
     });
@@ -2829,6 +2839,16 @@ async function executeGenieSweep(client, config) {
 }
 
 export function stopScheduler() {
+  if (schedulerRefreshJob) {
+    schedulerRefreshJob.stop();
+    schedulerRefreshJob = null;
+  }
+
+  if (dailyCatchupJob) {
+    dailyCatchupJob.stop();
+    dailyCatchupJob = null;
+  }
+
   for (const [key, { job }] of scheduledJobs) {
     job.stop();
   }

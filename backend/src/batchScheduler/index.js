@@ -39,6 +39,7 @@ import {
 const scheduledBatchJobs = new Map();
 const activeConnections = new Map();
 const runningTasks = new Set();
+let batchSchedulerRefreshJob = null;
 const DAILY_POINT_TASK_ID_MAP = {
   SIGN_IN: [1],
   HANGUP_ADD_TIME: [2],
@@ -292,7 +293,11 @@ export async function initBatchScheduler() {
     scheduleBatchTask(task);
   }
 
-  cron.schedule('* * * * *', async () => {
+  if (batchSchedulerRefreshJob) {
+    batchSchedulerRefreshJob.stop();
+    batchSchedulerRefreshJob = null;
+  }
+  batchSchedulerRefreshJob = cron.schedule('* * * * *', async () => {
     await checkAndRunDueBatchTasks();
   }, {
     timezone: config.cron.timezone
@@ -1486,6 +1491,11 @@ async function executeGenieSweep(client, config) {
 }
 
 export function stopBatchScheduler() {
+  if (batchSchedulerRefreshJob) {
+    batchSchedulerRefreshJob.stop();
+    batchSchedulerRefreshJob = null;
+  }
+
   for (const [taskId, { job }] of scheduledBatchJobs) {
     job.stop();
   }

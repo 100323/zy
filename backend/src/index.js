@@ -13,8 +13,8 @@ import batchSchedulerRoutes from './routes/batchScheduler.js';
 import batchSettingsRoutes from './routes/batchSettings.js';
 import inviteCodeRoutes from './routes/inviteCodes.js';
 import adminUsersRoutes from './routes/adminUsers.js';
-import { initScheduler, executeTask } from './scheduler/index.js';
-import { initBatchScheduler } from './batchScheduler/index.js';
+import { initScheduler, executeTask, stopScheduler } from './scheduler/index.js';
+import { initBatchScheduler, stopBatchScheduler } from './batchScheduler/index.js';
 import { authMiddleware } from './middleware/auth.js';
 import { get } from './database/index.js';
 import { decrypt } from './utils/crypto.js';
@@ -24,6 +24,37 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+let serverInstance = null;
+
+const startupState = {
+  startedAt: new Date().toISOString(),
+  database: {
+    status: 'pending',
+    lastError: null,
+  },
+  scheduler: {
+    status: 'pending',
+    attempts: 0,
+    lastError: null,
+  },
+  batchScheduler: {
+    status: 'pending',
+    attempts: 0,
+    lastError: null,
+  },
+};
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function getHealthStatusCode() {
+  if (startupState.database.status === 'failed') {
+    return 503;
+  }
+
+  return 200;
+}
 
 app.use(cors());
 app.use(express.json({
@@ -50,9 +81,14 @@ app.use('/api/invite-codes', inviteCodeRoutes);
 app.use('/api/admin/users', adminUsersRoutes);
 
 app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString()
+  res.status(getHealthStatusCode()).json({
+    status: startupState.database.status === 'ready' ? 'ok' : 'starting',
+    timestamp: new Date().toISOString(),
+    services: {
+      database: startupState.database,
+      scheduler: startupState.scheduler,
+      batchScheduler: startupState.batchScheduler,
+    }
   });
 });
 
@@ -116,43 +152,117 @@ app.use((err, req, res, next) => {
   });
 });
 
+async function initializeBackgroundService(serviceName, stateKey, initFn, stopFn, options = {}) {
+  const {
+    maxRetries = 3,
+    retryDelayMs = 5000,
+  } = options;
+
+  startupState[stateKey].status = 'starting';
+  startupState[stateKey].lastError = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    startupState[stateKey].attempts = attempt;
+    const startedAt = Date.now();
+
+    try {
+      if (attempt > 1) {
+        try {
+          stopFn?.();
+        } catch (stopError) {
+          console.warn(`⚠️ ${serviceName} 重试前清理失败:`, stopError?.message || stopError);
+        }
+      }
+
+      console.log(`⏳ 开始初始化${serviceName}（第 ${attempt}/${maxRetries} 次）...`);
+      await initFn();
+      startupState[stateKey].status = 'ready';
+      startupState[stateKey].lastError = null;
+      console.log(`✅ ${serviceName} 初始化完成，用时 ${Date.now() - startedAt}ms`);
+      return true;
+    } catch (error) {
+      startupState[stateKey].status = 'failed';
+      startupState[stateKey].lastError = error?.message || String(error);
+      console.error(`❌ ${serviceName} 初始化失败（第 ${attempt}/${maxRetries} 次）:`, error);
+      if (attempt < maxRetries) {
+        await sleep(retryDelayMs);
+      }
+    }
+  }
+
+  console.error(`❌ ${serviceName} 多次初始化失败，服务继续提供 API，但该模块当前不可用`);
+  return false;
+}
+
+async function initializeBackgroundServices() {
+  await initializeBackgroundService('定时任务调度器', 'scheduler', initScheduler, stopScheduler, {
+    maxRetries: 3,
+    retryDelayMs: 5000,
+  });
+
+  await initializeBackgroundService('批量任务调度器', 'batchScheduler', initBatchScheduler, stopBatchScheduler, {
+    maxRetries: 3,
+    retryDelayMs: 5000,
+  });
+}
+
+function logServerBootInfo() {
+  console.log(`🚀 服务器运行在 http://${config.server.host}:${config.server.port}`);
+  console.log('📝 API 文档:');
+  console.log('   POST /api/auth/register - 用户注册');
+  console.log('   POST /api/auth/login - 用户登录');
+  console.log('   GET  /api/auth/me - 获取当前用户信息');
+  console.log('   GET  /api/accounts - 获取账号列表');
+  console.log('   POST /api/accounts - 添加账号');
+  console.log('   GET  /api/tasks/types - 获取任务类型');
+  console.log('   GET  /api/tasks/account/:id - 获取账号的任务配置');
+  console.log('   POST /api/tasks/account/:id - 创建/更新任务配置');
+  console.log('   GET  /api/logs - 获取执行日志');
+  console.log('   GET  /api/batch-scheduler - 获取批量任务列表');
+  console.log('   POST /api/batch-scheduler - 创建批量任务');
+  console.log('ℹ️ 调度器将在端口监听成功后后台初始化，避免启动阶段长时间 502');
+}
+
 async function startServer() {
   try {
+    startupState.database.status = 'starting';
     await initDatabase();
-    
-    await initScheduler();
-    
-    await initBatchScheduler();
-    
-    app.listen(config.server.port, config.server.host, () => {
-      console.log(`🚀 服务器运行在 http://${config.server.host}:${config.server.port}`);
-      console.log(`📝 API 文档:`);
-      console.log(`   POST /api/auth/register - 用户注册`);
-      console.log(`   POST /api/auth/login - 用户登录`);
-      console.log(`   GET  /api/auth/me - 获取当前用户信息`);
-      console.log(`   GET  /api/accounts - 获取账号列表`);
-      console.log(`   POST /api/accounts - 添加账号`);
-      console.log(`   GET  /api/tasks/types - 获取任务类型`);
-      console.log(`   GET  /api/tasks/account/:id - 获取账号的任务配置`);
-      console.log(`   POST /api/tasks/account/:id - 创建/更新任务配置`);
-      console.log(`   GET  /api/logs - 获取执行日志`);
-      console.log(`   GET  /api/batch-scheduler - 获取批量任务列表`);
-      console.log(`   POST /api/batch-scheduler - 创建批量任务`);
-    });
+    startupState.database.status = 'ready';
+    startupState.database.lastError = null;
   } catch (error) {
-    console.error('启动服务器失败:', error);
+    startupState.database.status = 'failed';
+    startupState.database.lastError = error?.message || String(error);
+    console.error('启动服务器失败（数据库初始化）:', error);
     process.exit(1);
   }
+
+  serverInstance = app.listen(config.server.port, config.server.host, () => {
+    logServerBootInfo();
+    setImmediate(() => {
+      void initializeBackgroundServices();
+    });
+  });
+
+  serverInstance.on('error', (error) => {
+    console.error('启动服务器失败（监听端口）:', error);
+    process.exit(1);
+  });
 }
 
 startServer();
 
 process.on('SIGINT', () => {
   console.log('\n正在关闭服务器...');
+  stopScheduler();
+  stopBatchScheduler();
+  serverInstance?.close?.();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   console.log('\n正在关闭服务器...');
+  stopScheduler();
+  stopBatchScheduler();
+  serverInstance?.close?.();
   process.exit(0);
 });
