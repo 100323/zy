@@ -410,6 +410,12 @@ export async function runDatabaseMaintenance() {
   await saveDatabase();
 }
 
+export async function runDatabaseVacuum() {
+  const database = getDatabase();
+  database.run('VACUUM');
+  await saveDatabase();
+}
+
 export async function saveDatabase() {
   if (!db) return;
   markDatabaseDirty();
@@ -613,5 +619,6 @@ export default {
   cleanupTaskLogs,
   cleanupBatchTaskLogs,
   cleanupLogTables,
-  runDatabaseMaintenance
+  runDatabaseMaintenance,
+  runDatabaseVacuum
 };

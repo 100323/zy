@@ -3,7 +3,7 @@ import cors from 'cors';
 import cron from 'node-cron';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initDatabase, closeDatabase, runDatabaseMaintenance } from './database/index.js';
+import { initDatabase, closeDatabase, runDatabaseMaintenance, runDatabaseVacuum } from './database/index.js';
 import authRoutes from './routes/auth.js';
 import accountRoutes from './routes/accounts.js';
 import taskRoutes from './routes/tasks.js';
@@ -28,7 +28,9 @@ const app = express();
 let serverInstance = null;
 let isShuttingDown = false;
 let databaseMaintenanceJob = null;
+let databaseVacuumJob = null;
 const DATABASE_MAINTENANCE_CRON = '35 3 * * *';
+const DATABASE_VACUUM_CRON = '10 4 * * 0';
 
 const startupState = {
   startedAt: new Date().toISOString(),
@@ -47,6 +49,11 @@ const startupState = {
     lastError: null,
   },
   databaseMaintenance: {
+    status: 'pending',
+    lastRunAt: null,
+    lastError: null,
+  },
+  databaseVacuum: {
     status: 'pending',
     lastRunAt: null,
     lastError: null,
@@ -237,6 +244,10 @@ function initDatabaseMaintenanceJob() {
     databaseMaintenanceJob.stop();
     databaseMaintenanceJob = null;
   }
+  if (databaseVacuumJob) {
+    databaseVacuumJob.stop();
+    databaseVacuumJob = null;
+  }
 
   startupState.databaseMaintenance.status = 'ready';
   startupState.databaseMaintenance.lastError = null;
@@ -245,13 +256,38 @@ function initDatabaseMaintenanceJob() {
   }, {
     timezone: config.cron.timezone,
   });
+  startupState.databaseVacuum.status = 'ready';
+  startupState.databaseVacuum.lastError = null;
+  databaseVacuumJob = cron.schedule(DATABASE_VACUUM_CRON, async () => {
+    const startedAt = Date.now();
+    startupState.databaseVacuum.status = 'running';
+    startupState.databaseVacuum.lastError = null;
+
+    try {
+      await runDatabaseVacuum();
+      startupState.databaseVacuum.status = 'ready';
+      startupState.databaseVacuum.lastRunAt = new Date().toISOString();
+      console.log(`🧼 数据库 VACUUM 完成，用时 ${Date.now() - startedAt}ms`);
+    } catch (error) {
+      startupState.databaseVacuum.status = 'failed';
+      startupState.databaseVacuum.lastError = error?.message || String(error);
+      console.error('❌ 数据库 VACUUM 失败:', error);
+    }
+  }, {
+    timezone: config.cron.timezone,
+  });
   console.log(`🧹 数据库日志清理已改为后台定时任务 (${DATABASE_MAINTENANCE_CRON}, ${config.cron.timezone})`);
+  console.log(`🧼 数据库 VACUUM 已改为后台定时任务 (${DATABASE_VACUUM_CRON}, ${config.cron.timezone})`);
 }
 
 function stopDatabaseMaintenanceJob() {
   if (databaseMaintenanceJob) {
     databaseMaintenanceJob.stop();
     databaseMaintenanceJob = null;
+  }
+  if (databaseVacuumJob) {
+    databaseVacuumJob.stop();
+    databaseVacuumJob = null;
   }
 }
 
@@ -271,6 +307,7 @@ function logServerBootInfo() {
   console.log('   POST /api/batch-scheduler - 创建批量任务');
   console.log('ℹ️ 调度器将在端口监听成功后后台初始化，避免启动阶段长时间 502');
   console.log('ℹ️ 数据库日志清理已移至后台定时任务，避免启动阶段全表清理');
+  console.log('ℹ️ 数据库压缩（VACUUM）已移至每周后台维护，避免文件长期膨胀');
 }
 
 async function startServer() {

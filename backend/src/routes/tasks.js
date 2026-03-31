@@ -704,10 +704,34 @@ export function markTaskRunTime(taskId, lastRunAt, nextRunAt) {
   );
 }
 
+const TASK_LOG_DETAILS_MAX_LENGTH = 1000;
+
+function normalizeTaskLogDetails(status, details) {
+  if (details === null || details === undefined || details === '') {
+    return null;
+  }
+
+  if (status === 'success') {
+    return null;
+  }
+
+  const raw = typeof details === 'string' ? details : JSON.stringify(details);
+  if (!raw) {
+    return null;
+  }
+
+  if (raw.length <= TASK_LOG_DETAILS_MAX_LENGTH) {
+    return raw;
+  }
+
+  const omitted = raw.length - TASK_LOG_DETAILS_MAX_LENGTH;
+  return `${raw.slice(0, TASK_LOG_DETAILS_MAX_LENGTH)}...[已截断${omitted}字符]`;
+}
+
 export function addTaskLog(accountId, taskType, status, message, details = null) {
   run(
     'INSERT INTO task_logs (account_id, task_type, status, message, details) VALUES (?, ?, ?, ?, ?)',
-    [accountId, taskType, status, message, details]
+    [accountId, taskType, status, message, normalizeTaskLogDetails(status, details)]
   );
   cleanupTaskLogs(undefined, accountId);
 }

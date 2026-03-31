@@ -411,10 +411,34 @@ export async function updateBatchTaskRunTimesBatch(updates = []) {
   return normalized.length;
 }
 
+const BATCH_TASK_LOG_DETAILS_MAX_LENGTH = 1000;
+
+function normalizeBatchTaskLogDetails(status, details) {
+  if (details === null || details === undefined || details === '') {
+    return null;
+  }
+
+  if (status === 'success' || status === 'info') {
+    return null;
+  }
+
+  const raw = typeof details === 'string' ? details : JSON.stringify(details);
+  if (!raw) {
+    return null;
+  }
+
+  if (raw.length <= BATCH_TASK_LOG_DETAILS_MAX_LENGTH) {
+    return raw;
+  }
+
+  const omitted = raw.length - BATCH_TASK_LOG_DETAILS_MAX_LENGTH;
+  return `${raw.slice(0, BATCH_TASK_LOG_DETAILS_MAX_LENGTH)}...[已截断${omitted}字符]`;
+}
+
 export function addBatchTaskLogEntry(batchTaskId, accountId, taskType, status, message, details = null) {
   run(
     'INSERT INTO batch_task_logs (batch_task_id, account_id, task_type, status, message, details) VALUES (?, ?, ?, ?, ?, ?)',
-    [batchTaskId, accountId, taskType, status, message, details]
+    [batchTaskId, accountId, taskType, status, message, normalizeBatchTaskLogDetails(status, details)]
   );
   cleanupBatchTaskLogs(undefined, batchTaskId);
 }
