@@ -674,6 +674,29 @@ export function updateTaskRunTime(taskId, nextRunAt) {
   );
 }
 
+export async function updateTaskRunTimesBatch(updates = []) {
+  const normalized = updates
+    .map((item) => ({
+      taskId: Number(item?.taskId),
+      nextRunAt: item?.nextRunAt ?? null,
+    }))
+    .filter((item) => Number.isInteger(item.taskId) && item.taskId > 0);
+
+  if (normalized.length === 0) {
+    return 0;
+  }
+
+  const db = getDatabase();
+  normalized.forEach((item) => {
+    db.run(
+      'UPDATE task_configs SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [item.nextRunAt, item.taskId]
+    );
+  });
+  await saveDatabase();
+  return normalized.length;
+}
+
 export function markTaskRunTime(taskId, lastRunAt, nextRunAt) {
   run(
     'UPDATE task_configs SET last_run_at = ?, next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',

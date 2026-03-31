@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import {
   getEnabledTasks,
   updateTaskRunTime,
+  updateTaskRunTimesBatch,
   markTaskRunTime,
   addTaskLog,
   ensureDefaultTaskConfigsForAllAccounts,
@@ -1082,9 +1083,34 @@ export async function initScheduler() {
   
   const tasks = getEnabledTasks();
   console.log(`📋 找到 ${tasks.length} 个启用的任务`);
+  const startupRunTimeUpdates = [];
+  let scheduledCount = 0;
 
   for (const task of tasks) {
-    scheduleTask(task);
+    const scheduled = scheduleTask(task, {
+      persistNextRun: false,
+      logScheduled: false,
+    });
+    if (scheduled?.scheduled) {
+      scheduledCount += 1;
+      if (scheduled.nextRunAt) {
+        startupRunTimeUpdates.push({
+          taskId: task.id,
+          nextRunAt: scheduled.nextRunAt,
+        });
+      }
+    }
+  }
+
+  if (startupRunTimeUpdates.length > 0) {
+    await updateTaskRunTimesBatch(startupRunTimeUpdates);
+  }
+
+  if (scheduledCount > 0) {
+    console.log('📅 已完成定时任务批量注册', {
+      scheduledCount,
+      nextRunAtPersistedCount: startupRunTimeUpdates.length,
+    });
   }
 
   if (schedulerRefreshJob) {
@@ -1112,7 +1138,11 @@ export async function initScheduler() {
   console.log('✅ 定时任务调度器初始化完成');
 }
 
-export function scheduleTask(task) {
+export function scheduleTask(task, options = {}) {
+  const {
+    persistNextRun = true,
+    logScheduled = true,
+  } = options;
   const jobKey = `${task.account_id}_${task.task_type}`;
   
   if (scheduledJobs.has(jobKey)) {
@@ -1122,11 +1152,12 @@ export function scheduleTask(task) {
   }
 
   if (!task.enabled) {
-    return;
+    return { scheduled: false, nextRunAt: null };
   }
 
   try {
     const cronExpression = task.cron_expression;
+    const nextRunAt = calculateNextRunAt(cronExpression);
     const job = cron.schedule(cronExpression, async () => {
       try {
         console.log('⏰ 定时任务命中', {
@@ -1151,11 +1182,17 @@ export function scheduleTask(task) {
       cronExpression
     });
     
-    updateTaskRunTime(task.id, calculateNextRunAt(cronExpression));
+    if (persistNextRun) {
+      updateTaskRunTime(task.id, nextRunAt);
+    }
     
-    console.log(`📅 已调度任务: ${task.account_name} - ${task.task_type} (${task.cron_expression})`);
+    if (logScheduled) {
+      console.log(`📅 已调度任务: ${task.account_name} - ${task.task_type} (${task.cron_expression})`);
+    }
+    return { scheduled: true, nextRunAt };
   } catch (error) {
     console.error(`❌ 调度任务失败: ${task.account_name} - ${task.task_type}:`, error.message);
+    return { scheduled: false, nextRunAt: null, error };
   }
 }
 

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { run, get, all, cleanupBatchTaskLogs } from '../database/index.js';
+import { run, get, all, cleanupBatchTaskLogs, getDatabase, saveDatabase } from '../database/index.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { scheduleBatchTask, unscheduleBatchTask, executeBatchTask } from '../batchScheduler/index.js';
 
@@ -386,6 +386,29 @@ export function updateBatchTaskRunTime(taskId, lastRunAt, nextRunAt) {
     'UPDATE batch_scheduled_tasks SET last_run_at = ?, next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
     [lastRunAt, nextRunAt, taskId]
   );
+}
+
+export async function updateBatchTaskRunTimesBatch(updates = []) {
+  const normalized = updates
+    .map((item) => ({
+      taskId: Number(item?.taskId),
+      nextRunAt: item?.nextRunAt ?? null,
+    }))
+    .filter((item) => Number.isInteger(item.taskId) && item.taskId > 0);
+
+  if (normalized.length === 0) {
+    return 0;
+  }
+
+  const db = getDatabase();
+  normalized.forEach((item) => {
+    db.run(
+      'UPDATE batch_scheduled_tasks SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [item.nextRunAt, item.taskId]
+    );
+  });
+  await saveDatabase();
+  return normalized.length;
 }
 
 export function addBatchTaskLogEntry(batchTaskId, accountId, taskType, status, message, details = null) {

@@ -3,7 +3,7 @@ import { get, all, run } from '../database/index.js';
 import { decrypt } from '../utils/crypto.js';
 import GameClient from '../utils/gameClient.js';
 import config from '../config/index.js';
-import { updateBatchTaskRunTime, addBatchTaskLogEntry } from '../routes/batchScheduler.js';
+import { updateBatchTaskRunTime, updateBatchTaskRunTimesBatch, addBatchTaskLogEntry } from '../routes/batchScheduler.js';
 import { findAnswer } from '../utils/studyQuestions.js';
 import { parseTokenPayload } from '../utils/token.js';
 import { calculateNextRunAt, resolveBatchCronExpression } from '../utils/cronSchedule.js';
@@ -288,9 +288,34 @@ export async function initBatchScheduler() {
   );
   
   console.log(`📋 找到 ${tasks.length} 个启用的批量任务`);
+  const startupRunTimeUpdates = [];
+  let scheduledCount = 0;
 
   for (const task of tasks) {
-    scheduleBatchTask(task);
+    const scheduled = scheduleBatchTask(task, {
+      persistNextRun: false,
+      logScheduled: false,
+    });
+    if (scheduled?.scheduled) {
+      scheduledCount += 1;
+      if (scheduled.nextRunAt) {
+        startupRunTimeUpdates.push({
+          taskId: task.id,
+          nextRunAt: scheduled.nextRunAt,
+        });
+      }
+    }
+  }
+
+  if (startupRunTimeUpdates.length > 0) {
+    await updateBatchTaskRunTimesBatch(startupRunTimeUpdates);
+  }
+
+  if (scheduledCount > 0) {
+    console.log('📅 已完成批量任务批量注册', {
+      scheduledCount,
+      nextRunAtPersistedCount: startupRunTimeUpdates.length,
+    });
   }
 
   if (batchSchedulerRefreshJob) {
@@ -306,7 +331,11 @@ export async function initBatchScheduler() {
   console.log('✅ 批量任务调度器初始化完成');
 }
 
-export function scheduleBatchTask(task) {
+export function scheduleBatchTask(task, options = {}) {
+  const {
+    persistNextRun = true,
+    logScheduled = true,
+  } = options;
   const taskId = Number(task.id);
 
   if (scheduledBatchJobs.has(taskId)) {
@@ -317,7 +346,7 @@ export function scheduleBatchTask(task) {
   }
 
   if (!task.enabled) {
-    return;
+    return { scheduled: false, nextRunAt: null };
   }
 
   const cronExpression = resolveBatchCronExpression(task);
@@ -327,6 +356,7 @@ export function scheduleBatchTask(task) {
   }
 
   try {
+    const nextRunAt = calculateNextRunAt(cronExpression);
     const job = cron.schedule(cronExpression, async () => {
       try {
         await waitForScheduledTaskStagger({
@@ -349,19 +379,23 @@ export function scheduleBatchTask(task) {
       timezone: config.cron.timezone
     });
 
-    const nextRunAt = calculateNextRunAt(cronExpression);
-    
     scheduledBatchJobs.set(taskId, {
       job,
       cronExpression,
       nextRun: nextRunAt
     });
 
-    updateBatchTaskRunTime(taskId, null, nextRunAt);
+    if (persistNextRun) {
+      updateBatchTaskRunTime(taskId, null, nextRunAt);
+    }
     
-    console.log(`📅 已调度批量任务: ${task.name} (${cronExpression})`);
+    if (logScheduled) {
+      console.log(`📅 已调度批量任务: ${task.name} (${cronExpression})`);
+    }
+    return { scheduled: true, nextRunAt };
   } catch (error) {
     console.error(`❌ 调度批量任务失败: ${task.name}:`, error.message);
+    return { scheduled: false, nextRunAt: null, error };
   }
 }
 
