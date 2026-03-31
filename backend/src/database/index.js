@@ -193,7 +193,6 @@ export async function initDatabase() {
   ensureTaskConfigSchema(db);
   ensureSystemSettingsSchema(db);
   normalizeGameAccounts(db);
-  cleanupLogTables(db);
   
   await saveDatabase();
 
@@ -405,6 +404,12 @@ export function cleanupLogTables(targetDb = getDatabase()) {
   cleanupBatchTaskLogs(targetDb);
 }
 
+export async function runDatabaseMaintenance() {
+  const database = getDatabase();
+  cleanupLogTables(database);
+  await saveDatabase();
+}
+
 export async function saveDatabase() {
   if (!db) return;
   markDatabaseDirty();
@@ -607,5 +612,6 @@ export default {
   normalizeGameAccounts,
   cleanupTaskLogs,
   cleanupBatchTaskLogs,
-  cleanupLogTables
+  cleanupLogTables,
+  runDatabaseMaintenance
 };

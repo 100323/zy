@@ -1,8 +1,9 @@
 import express from 'express';
 import cors from 'cors';
+import cron from 'node-cron';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initDatabase, closeDatabase } from './database/index.js';
+import { initDatabase, closeDatabase, runDatabaseMaintenance } from './database/index.js';
 import authRoutes from './routes/auth.js';
 import accountRoutes from './routes/accounts.js';
 import taskRoutes from './routes/tasks.js';
@@ -26,6 +27,8 @@ const __dirname = path.dirname(__filename);
 const app = express();
 let serverInstance = null;
 let isShuttingDown = false;
+let databaseMaintenanceJob = null;
+const DATABASE_MAINTENANCE_CRON = '35 3 * * *';
 
 const startupState = {
   startedAt: new Date().toISOString(),
@@ -41,6 +44,11 @@ const startupState = {
   batchScheduler: {
     status: 'pending',
     attempts: 0,
+    lastError: null,
+  },
+  databaseMaintenance: {
+    status: 'pending',
+    lastRunAt: null,
     lastError: null,
   },
 };
@@ -207,6 +215,46 @@ async function initializeBackgroundServices() {
   });
 }
 
+async function runDatabaseMaintenanceTask(trigger = 'scheduled') {
+  const startedAt = Date.now();
+  startupState.databaseMaintenance.status = 'running';
+  startupState.databaseMaintenance.lastError = null;
+
+  try {
+    await runDatabaseMaintenance();
+    startupState.databaseMaintenance.status = 'ready';
+    startupState.databaseMaintenance.lastRunAt = new Date().toISOString();
+    console.log(`🧹 数据库日志清理完成 (${trigger})，用时 ${Date.now() - startedAt}ms`);
+  } catch (error) {
+    startupState.databaseMaintenance.status = 'failed';
+    startupState.databaseMaintenance.lastError = error?.message || String(error);
+    console.error(`❌ 数据库日志清理失败 (${trigger}):`, error);
+  }
+}
+
+function initDatabaseMaintenanceJob() {
+  if (databaseMaintenanceJob) {
+    databaseMaintenanceJob.stop();
+    databaseMaintenanceJob = null;
+  }
+
+  startupState.databaseMaintenance.status = 'ready';
+  startupState.databaseMaintenance.lastError = null;
+  databaseMaintenanceJob = cron.schedule(DATABASE_MAINTENANCE_CRON, async () => {
+    await runDatabaseMaintenanceTask('scheduled');
+  }, {
+    timezone: config.cron.timezone,
+  });
+  console.log(`🧹 数据库日志清理已改为后台定时任务 (${DATABASE_MAINTENANCE_CRON}, ${config.cron.timezone})`);
+}
+
+function stopDatabaseMaintenanceJob() {
+  if (databaseMaintenanceJob) {
+    databaseMaintenanceJob.stop();
+    databaseMaintenanceJob = null;
+  }
+}
+
 function logServerBootInfo() {
   console.log(`🚀 服务器运行在 http://${config.server.host}:${config.server.port}`);
   console.log('📝 API 文档:');
@@ -222,6 +270,7 @@ function logServerBootInfo() {
   console.log('   GET  /api/batch-scheduler - 获取批量任务列表');
   console.log('   POST /api/batch-scheduler - 创建批量任务');
   console.log('ℹ️ 调度器将在端口监听成功后后台初始化，避免启动阶段长时间 502');
+  console.log('ℹ️ 数据库日志清理已移至后台定时任务，避免启动阶段全表清理');
 }
 
 async function startServer() {
@@ -239,6 +288,7 @@ async function startServer() {
 
   serverInstance = app.listen(config.server.port, config.server.host, () => {
     logServerBootInfo();
+    initDatabaseMaintenanceJob();
     setImmediate(() => {
       void initializeBackgroundServices();
     });
@@ -262,6 +312,7 @@ async function shutdownServer(signal) {
   try {
     stopScheduler();
     stopBatchScheduler();
+    stopDatabaseMaintenanceJob();
     await new Promise((resolve) => {
       serverInstance?.close?.(() => resolve());
       if (!serverInstance) {
