@@ -1,4 +1,4 @@
-import initSqlJs from 'sql.js';
+import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -6,19 +6,9 @@ import config from '../config/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dbPath = path.resolve(__dirname, '../../data', path.basename(config.database.path));
-const dbTempPath = `${dbPath}.tmp`;
-const SAVE_DEBOUNCE_MS = Number(process.env.DB_SAVE_DEBOUNCE_MS) || 800;
-const SAVE_MAX_DELAY_MS = Number(process.env.DB_SAVE_MAX_DELAY_MS) || 5000;
 
+let rawDb = null;
 let db = null;
-let SQL = null;
-let saveTimer = null;
-let dirtySinceAt = 0;
-let isDirty = false;
-let saveInFlightPromise = null;
-let pendingSavePromise = null;
-let pendingSaveResolve = null;
-let pendingSaveReject = null;
 
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
@@ -169,136 +159,208 @@ CREATE INDEX IF NOT EXISTS idx_account_batch_settings_account ON account_batch_s
 CREATE INDEX IF NOT EXISTS idx_batch_task_templates_user ON batch_task_templates(user_id);
 `;
 
-export async function initDatabase() {
-  if (db) return db;
+const TASK_LOG_RETENTION_DAYS = 30;
+const TASK_LOG_MAX_PER_ACCOUNT = 30;
+const BATCH_LOG_MAX_PER_TASK = 2000;
 
-  SQL = await initSqlJs();
-  
+function normalizeParams(params = []) {
+  if (Array.isArray(params)) return params;
+  if (params === undefined || params === null) return [];
+  return [params];
+}
+
+function runStatement(database, sql, params = []) {
+  const stmt = database.prepare(sql);
+  return stmt.run(...normalizeParams(params));
+}
+
+function getStatement(database, sql, params = []) {
+  const stmt = database.prepare(sql);
+  return stmt.get(...normalizeParams(params)) ?? null;
+}
+
+function allStatement(database, sql, params = []) {
+  const stmt = database.prepare(sql);
+  return stmt.all(...normalizeParams(params));
+}
+
+function createDatabaseAdapter(database) {
+  return {
+    run(sql, params = []) {
+      return runStatement(database, sql, params);
+    },
+  };
+}
+
+function getTableColumns(tableName) {
+  return new Set(
+    rawDb
+      .prepare(`PRAGMA table_info('${tableName}')`)
+      .all()
+      .map((row) => String(row?.name || '').toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+export async function initDatabase() {
+  if (rawDb) return db;
+
+  const startedAt = Date.now();
+  let dirty = false;
+  const fileExists = fs.existsSync(dbPath);
+
+  console.log('🗃️ initDatabase[1/5] 检查数据目录...');
   const dataDir = path.dirname(dbPath);
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
+    dirty = true;
   }
 
-  let dbData = null;
-  if (fs.existsSync(dbPath)) {
-    dbData = fs.readFileSync(dbPath);
+  console.log('🗃️ initDatabase[2/5] 打开 SQLite 数据库...', {
+    dbPath,
+    exists: fileExists,
+  });
+  rawDb = new Database(dbPath);
+  rawDb.pragma('foreign_keys = ON');
+  rawDb.pragma('busy_timeout = 5000');
+  db = createDatabaseAdapter(rawDb);
+
+  console.log('🗃️ initDatabase[3/5] 应用基础 schema...');
+  rawDb.exec(schema);
+  if (!fileExists) {
+    dirty = true;
   }
 
-  db = new SQL.Database(dbData);
-  db.run('PRAGMA foreign_keys = ON;');
-  
-  db.run(schema);
-  ensureUsersSchema(db);
-  ensureGameAccountSchema(db);
-  ensureTaskConfigSchema(db);
-  ensureSystemSettingsSchema(db);
-  normalizeGameAccounts(db);
-  
-  await saveDatabase();
+  console.log('🗃️ initDatabase[4/5] 检查并补齐表结构...');
+  dirty = ensureUsersSchema() || dirty;
+  dirty = ensureGameAccountSchema() || dirty;
+  dirty = ensureTaskConfigSchema() || dirty;
+  dirty = ensureSystemSettingsSchema() || dirty;
 
-  console.log('✅ 数据库初始化完成:', dbPath);
+  console.log('🗃️ initDatabase[5/5] 执行数据规范化...');
+  const normalizeResult = normalizeGameAccounts();
+  dirty = normalizeResult.changed || dirty;
+
+  if (dirty) {
+    console.log('💾 initDatabase 检测到结构/数据变更，better-sqlite3 已实时持久化，无需额外导出保存');
+  } else {
+    console.log('🪶 initDatabase 未检测到结构/数据变更，跳过保存');
+  }
+
+  console.log(`✅ 数据库初始化完成: ${dbPath}（用时 ${Date.now() - startedAt}ms）`);
   return db;
 }
 
-function ensureUsersSchema(db) {
+function ensureUsersSchema() {
+  let changed = false;
   try {
-    const result = db.exec("PRAGMA table_info('users')");
-    const columns = new Set(
-      result?.[0]?.values?.map((row) => String(row?.[1] || '').toLowerCase()) || []
-    );
+    const columns = getTableColumns('users');
 
     if (!columns.has('is_enabled')) {
-      db.run('ALTER TABLE users ADD COLUMN is_enabled INTEGER DEFAULT 1');
-      db.run('UPDATE users SET is_enabled = 1 WHERE is_enabled IS NULL');
+      rawDb.exec('ALTER TABLE users ADD COLUMN is_enabled INTEGER DEFAULT 1');
+      rawDb.exec('UPDATE users SET is_enabled = 1 WHERE is_enabled IS NULL');
+      changed = true;
     }
 
     if (!columns.has('access_start_at')) {
-      db.run('ALTER TABLE users ADD COLUMN access_start_at DATETIME');
+      rawDb.exec('ALTER TABLE users ADD COLUMN access_start_at DATETIME');
+      changed = true;
     }
 
     if (!columns.has('access_end_at')) {
-      db.run('ALTER TABLE users ADD COLUMN access_end_at DATETIME');
+      rawDb.exec('ALTER TABLE users ADD COLUMN access_end_at DATETIME');
+      changed = true;
     }
 
     if (!columns.has('max_game_accounts')) {
-      db.run('ALTER TABLE users ADD COLUMN max_game_accounts INTEGER DEFAULT 5');
-      db.run('UPDATE users SET max_game_accounts = 5 WHERE max_game_accounts IS NULL');
+      rawDb.exec('ALTER TABLE users ADD COLUMN max_game_accounts INTEGER DEFAULT 5');
+      rawDb.exec('UPDATE users SET max_game_accounts = 5 WHERE max_game_accounts IS NULL');
+      changed = true;
     }
   } catch (error) {
     console.warn('⚠️ 检查 users 表结构失败:', error?.message || error);
   }
+  return changed;
 }
 
-function ensureGameAccountSchema(db) {
+function ensureGameAccountSchema() {
+  let changed = false;
   try {
-    const result = db.exec("PRAGMA table_info('game_accounts')");
-    const columns = new Set(
-      result?.[0]?.values?.map((row) => String(row?.[1] || '').toLowerCase()) || []
-    );
+    const columns = getTableColumns('game_accounts');
     if (!columns.has('ws_url')) {
-      db.run('ALTER TABLE game_accounts ADD COLUMN ws_url TEXT');
+      rawDb.exec('ALTER TABLE game_accounts ADD COLUMN ws_url TEXT');
+      changed = true;
     }
     if (!columns.has('bin_encrypted')) {
-      db.run('ALTER TABLE game_accounts ADD COLUMN bin_encrypted TEXT');
+      rawDb.exec('ALTER TABLE game_accounts ADD COLUMN bin_encrypted TEXT');
+      changed = true;
     }
     if (!columns.has('bin_iv')) {
-      db.run('ALTER TABLE game_accounts ADD COLUMN bin_iv TEXT');
+      rawDb.exec('ALTER TABLE game_accounts ADD COLUMN bin_iv TEXT');
+      changed = true;
     }
     if (!columns.has('bin_updated_at')) {
-      db.run('ALTER TABLE game_accounts ADD COLUMN bin_updated_at DATETIME');
+      rawDb.exec('ALTER TABLE game_accounts ADD COLUMN bin_updated_at DATETIME');
+      changed = true;
     }
   } catch (error) {
     console.warn('⚠️ 检查 game_accounts 表结构失败:', error?.message || error);
   }
+  return changed;
 }
 
-function ensureTaskConfigSchema(db) {
+function ensureTaskConfigSchema() {
+  let changed = false;
   try {
-    const result = db.exec("PRAGMA table_info('task_configs')");
-    const columns = new Set(
-      result?.[0]?.values?.map((row) => String(row?.[1] || '').toLowerCase()) || []
-    );
+    const columns = getTableColumns('task_configs');
 
     if (!columns.has('cron_is_customized')) {
-      db.run('ALTER TABLE task_configs ADD COLUMN cron_is_customized INTEGER');
+      rawDb.exec('ALTER TABLE task_configs ADD COLUMN cron_is_customized INTEGER');
+      changed = true;
     }
 
     if (!columns.has('default_cron_version')) {
-      db.run('ALTER TABLE task_configs ADD COLUMN default_cron_version INTEGER');
+      rawDb.exec('ALTER TABLE task_configs ADD COLUMN default_cron_version INTEGER');
+      changed = true;
     }
   } catch (error) {
     console.warn('⚠️ 检查 task_configs 表结构失败:', error?.message || error);
   }
+  return changed;
 }
 
-function ensureSystemSettingsSchema(db) {
+function ensureSystemSettingsSchema() {
+  let changed = false;
   try {
-    db.run(`CREATE TABLE IF NOT EXISTS system_settings (
+    rawDb.exec(`CREATE TABLE IF NOT EXISTS system_settings (
       key TEXT PRIMARY KEY,
       value TEXT,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
 
-    const existingSchedulerConcurrency = db.exec(
+    const existingSchedulerConcurrency = getStatement(
+      rawDb,
       "SELECT value FROM system_settings WHERE key = 'scheduler_max_concurrent_accounts' LIMIT 1"
     );
-    const hasSchedulerConcurrency = Array.isArray(existingSchedulerConcurrency?.[0]?.values)
-      && existingSchedulerConcurrency[0].values.length > 0;
 
-    if (!hasSchedulerConcurrency) {
+    if (!existingSchedulerConcurrency) {
       const defaultValue = String(Number(config?.scheduler?.maxConcurrentAccounts) || 3);
-      db.run(
+      runStatement(
+        rawDb,
         `INSERT INTO system_settings (key, value, updated_at)
          VALUES ('scheduler_max_concurrent_accounts', ?, CURRENT_TIMESTAMP)`,
         [defaultValue],
       );
+      changed = true;
     }
   } catch (error) {
     console.warn('⚠️ 检查 system_settings 表结构失败:', error?.message || error);
   }
+  return changed;
 }
 
 export function normalizeGameAccounts(targetDb = getDatabase()) {
+  let changed = false;
   try {
     const duplicateGroups = all(
       `SELECT user_id, name, COUNT(*) AS total, GROUP_CONCAT(id) AS ids
@@ -318,6 +380,7 @@ export function normalizeGameAccounts(targetDb = getDatabase()) {
         return;
       }
 
+      changed = true;
       const keepId = ids[0];
       const duplicateIds = ids.slice(1);
 
@@ -341,11 +404,8 @@ export function normalizeGameAccounts(targetDb = getDatabase()) {
   } catch (error) {
     console.warn('⚠️ 规范化 game_accounts 数据失败:', error?.message || error);
   }
+  return { changed };
 }
-
-const TASK_LOG_RETENTION_DAYS = 30;
-const TASK_LOG_MAX_PER_ACCOUNT = 30;
-const BATCH_LOG_MAX_PER_TASK = 2000;
 
 export function cleanupTaskLogs(targetDb = getDatabase(), accountId = null) {
   try {
@@ -405,140 +465,19 @@ export function cleanupLogTables(targetDb = getDatabase()) {
 }
 
 export async function runDatabaseMaintenance() {
-  const database = getDatabase();
-  cleanupLogTables(database);
-  await saveDatabase();
+  cleanupLogTables();
 }
 
 export async function runDatabaseVacuum() {
-  const database = getDatabase();
-  database.run('VACUUM');
-  await saveDatabase();
+  rawDb.exec('VACUUM');
 }
 
 export async function saveDatabase() {
-  if (!db) return;
-  markDatabaseDirty();
-  await flushDatabaseWrites();
-}
-
-function ensurePendingSavePromise() {
-  if (!pendingSavePromise) {
-    pendingSavePromise = new Promise((resolve, reject) => {
-      pendingSaveResolve = resolve;
-      pendingSaveReject = reject;
-    });
-  }
-  return pendingSavePromise;
-}
-
-function clearPendingSavePromise() {
-  pendingSavePromise = null;
-  pendingSaveResolve = null;
-  pendingSaveReject = null;
-}
-
-function resolvePendingSave() {
-  pendingSaveResolve?.();
-  clearPendingSavePromise();
-}
-
-function rejectPendingSave(error) {
-  pendingSaveReject?.(error);
-  clearPendingSavePromise();
-}
-
-function clearSaveTimer() {
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-  }
-}
-
-function markDatabaseDirty() {
-  if (!db) return;
-  isDirty = true;
-  if (!dirtySinceAt) {
-    dirtySinceAt = Date.now();
-  }
-}
-
-function writeDatabaseSnapshotSync() {
-  const data = db.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(dbTempPath, buffer);
-  fs.renameSync(dbTempPath, dbPath);
-}
-
-function scheduleDatabaseFlush({ immediate = false } = {}) {
-  if (!db) return Promise.resolve();
-
-  markDatabaseDirty();
-  const promise = ensurePendingSavePromise();
-
-  if (saveInFlightPromise) {
-    return promise;
-  }
-
-  const now = Date.now();
-  const elapsed = dirtySinceAt ? now - dirtySinceAt : 0;
-  const delay = immediate
-    ? 0
-    : Math.min(
-        SAVE_DEBOUNCE_MS,
-        Math.max(0, SAVE_MAX_DELAY_MS - elapsed),
-      );
-
-  clearSaveTimer();
-  saveTimer = setTimeout(() => {
-    void flushDatabaseWrites().catch((error) => {
-      console.error('❌ 数据库刷盘失败:', error);
-      if (db && isDirty) {
-        scheduleDatabaseFlush();
-      }
-    });
-  }, delay);
-
-  return promise;
+  return false;
 }
 
 export async function flushDatabaseWrites() {
-  if (!db) return;
-  while (true) {
-    if (saveInFlightPromise) {
-      await saveInFlightPromise;
-      continue;
-    }
-
-    if (!isDirty) {
-      resolvePendingSave();
-      return;
-    }
-
-    clearSaveTimer();
-
-    saveInFlightPromise = (async () => {
-      try {
-        while (db && isDirty) {
-          isDirty = false;
-          dirtySinceAt = 0;
-          writeDatabaseSnapshotSync();
-        }
-        resolvePendingSave();
-      } catch (error) {
-        isDirty = true;
-        if (!dirtySinceAt) {
-          dirtySinceAt = Date.now();
-        }
-        rejectPendingSave(error);
-        throw error;
-      } finally {
-        saveInFlightPromise = null;
-      }
-    })();
-
-    await saveInFlightPromise;
-  }
+  return false;
 }
 
 export function getDatabase() {
@@ -549,61 +488,27 @@ export function getDatabase() {
 }
 
 export async function closeDatabase() {
-  if (db) {
-    await flushDatabaseWrites();
-    clearSaveTimer();
-    db.close();
+  if (rawDb) {
+    rawDb.close();
+    rawDb = null;
     db = null;
-    isDirty = false;
-    dirtySinceAt = 0;
   }
 }
 
 export function run(sql, params = []) {
-  const db = getDatabase();
-  db.run(sql, params);
-
-  const normalizedSql = String(sql || '').trim().toUpperCase();
-  const shouldReadLastInsertRowid =
-    normalizedSql.startsWith('INSERT') || normalizedSql.startsWith('REPLACE');
-  const lastInsertRowid = shouldReadLastInsertRowid
-    ? (() => {
-        const lastIdResult = db.exec("SELECT last_insert_rowid() as id");
-        return lastIdResult.length > 0 ? lastIdResult[0].values[0][0] : null;
-      })()
-    : null;
-  
-  void scheduleDatabaseFlush();
-  
-  return { 
-    changes: db.getRowsModified(),
-    lastInsertRowid
+  const info = runStatement(rawDb, sql, params);
+  return {
+    changes: Number(info?.changes || 0),
+    lastInsertRowid: info?.lastInsertRowid ?? null,
   };
 }
 
 export function get(sql, params = []) {
-  const db = getDatabase();
-  const stmt = db.prepare(sql);
-  stmt.bind(params);
-  if (stmt.step()) {
-    const row = stmt.getAsObject();
-    stmt.free();
-    return row;
-  }
-  stmt.free();
-  return null;
+  return getStatement(rawDb, sql, params);
 }
 
 export function all(sql, params = []) {
-  const db = getDatabase();
-  const results = [];
-  const stmt = db.prepare(sql);
-  stmt.bind(params);
-  while (stmt.step()) {
-    results.push(stmt.getAsObject());
-  }
-  stmt.free();
-  return results;
+  return allStatement(rawDb, sql, params);
 }
 
 export default {
@@ -620,5 +525,5 @@ export default {
   cleanupBatchTaskLogs,
   cleanupLogTables,
   runDatabaseMaintenance,
-  runDatabaseVacuum
+  runDatabaseVacuum,
 };
