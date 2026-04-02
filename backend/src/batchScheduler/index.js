@@ -4,7 +4,7 @@ import { decrypt } from '../utils/crypto.js';
 import GameClient from '../utils/gameClient.js';
 import config from '../config/index.js';
 import { updateBatchTaskRunTime, updateBatchTaskRunTimesBatch, addBatchTaskLogEntry } from '../routes/batchScheduler.js';
-import { findAnswer } from '../utils/studyQuestions.js';
+import { findAnswer, getStudyQuestionLibraryStatus } from '../utils/studyQuestions.js';
 import { parseTokenPayload } from '../utils/token.js';
 import { calculateNextRunAt, resolveBatchCronExpression } from '../utils/cronSchedule.js';
 import {
@@ -1318,6 +1318,13 @@ async function executeHangupClaim(client, config) {
 }
 
 async function executeStudy(client, config) {
+  const questionLibrary = getStudyQuestionLibraryStatus();
+  console.log('🧠 批量答题题库状态', {
+    accountId: client.accountId ?? null,
+    accountName: client.accountName || null,
+    source: 'batch',
+    ...questionLibrary,
+  });
   return await executeStudyChallenge(client, {
     maxStudyAttempts: 3,
     logContext: {

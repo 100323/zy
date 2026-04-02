@@ -12,7 +12,7 @@ import { get, all } from '../database/index.js';
 import { decrypt } from '../utils/crypto.js';
 import GameClient from '../utils/gameClient.js';
 import config from '../config/index.js';
-import { findAnswer } from '../utils/studyQuestions.js';
+import { findAnswer, getStudyQuestionLibraryStatus } from '../utils/studyQuestions.js';
 import { parseTokenPayload } from '../utils/token.js';
 import { calculateNextRunAt, parseCronField } from '../utils/cronSchedule.js';
 import {
@@ -2566,6 +2566,13 @@ async function executeHangupClaim(client, config) {
 }
 
 async function executeStudy(client, config) {
+  const questionLibrary = getStudyQuestionLibraryStatus();
+  console.log('🧠 定时答题题库状态', {
+    accountId: client.accountId ?? null,
+    accountName: client.accountName || null,
+    source: 'scheduler',
+    ...questionLibrary,
+  });
   return await executeStudyChallenge(client, {
     maxStudyAttempts: 3,
     logContext: {
